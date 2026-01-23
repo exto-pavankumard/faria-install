@@ -1,0 +1,6 @@
+# Dependencies for Nemotron table structure model export
+# Pinned versions for Python 3.12 compatibility
+torch==2.9.1
+torchvision==0.24.1
+onnx==1.16.0
+numpy==1.26.4
