@@ -1,25 +1,26 @@
 #
 # Faria Installation Script for Windows
-# Main orchestration script for installing all Faria dependencies
+# Main orchestration script for installing Faria dependencies
 #
 # Usage: .\install.ps1 [OPTIONS]
 #
-# This script installs:
-#   Required:
-#     - ONNX Runtime (inference engine)
-#     - DETR model (layout detection)
-#     - Nemotron model (table structure)
-#     - Tesseract OCR (text extraction)
-#   Optional:
-#     - llama.cpp + Qwen model (cross-page table merging)
+# Features:
+#   idp  - Intelligent Document Processing (OpenCV, Tesseract, MuPDF, ONNX, models)
+#   chat - Conversational AI (llama.cpp, Qwen model)
+#
+# Examples:
+#   .\install.ps1 -Features idp          # Install IDP only
+#   .\install.ps1 -Features chat         # Install Chat only
+#   .\install.ps1 -Features "idp,chat"   # Install both
+#   .\install.ps1 -Features all          # Install everything
+#   .\install.ps1                        # Interactive mode
 #
 
 param(
     [string]$InstallDir = "$env:USERPROFILE\.faria",
+    [string]$Features = "",
     [switch]$GPU,
     [switch]$WithLLM,
-    [switch]$NoLLM,
-    [switch]$SkipTesseract,
     [switch]$Help
 )
 
@@ -29,23 +30,28 @@ if ($Help) {
     Write-Host "Usage: .\install.ps1 [OPTIONS]"
     Write-Host ""
     Write-Host "Options:"
-    Write-Host "  -InstallDir DIR   Install to DIR (default: $env:USERPROFILE\.faria)"
-    Write-Host "  -GPU              Enable GPU support (CUDA)"
-    Write-Host "  -WithLLM          Install LLM components without prompting"
-    Write-Host "  -NoLLM            Skip LLM components without prompting"
-    Write-Host "  -SkipTesseract    Skip Tesseract if already installed"
-    Write-Host "  -Help             Show this help message"
+    Write-Host "  -Features LIST     Comma-separated list of features to install"
+    Write-Host "                     Available: idp, chat, all"
+    Write-Host "  -InstallDir DIR    Install to DIR (default: $env:USERPROFILE\.faria)"
+    Write-Host "  -GPU               Enable GPU support (CUDA)"
+    Write-Host "  -WithLLM           Install LLM support for IDP (advanced document understanding)"
+    Write-Host "  -Help              Show this help message"
     Write-Host ""
-    Write-Host "Components:"
-    Write-Host "  Required:"
-    Write-Host "    - ONNX Runtime    Model inference engine (~50 MB)"
-    Write-Host "    - DETR            Layout detection model (~350 MB)"
-    Write-Host "    - Nemotron        Table structure model (~200 MB)"
-    Write-Host "    - Tesseract OCR   Text extraction (~30 MB)"
+    Write-Host "Features:"
+    Write-Host "  idp   - Intelligent Document Processing (~630 MB)"
+    Write-Host "          OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
+    Write-Host "          DETR model, Nemotron model"
+    Write-Host "          Optional: LLM support (~500 MB extra, use -WithLLM)"
     Write-Host ""
-    Write-Host "  Optional (LLM for cross-page table merging):"
-    Write-Host "    - llama.cpp       LLM inference engine (~5 MB)"
-    Write-Host "    - Qwen 2.5        Language model (~530 MB)"
+    Write-Host "  chat  - Conversational AI (~535 MB)"
+    Write-Host "          llama.cpp, Qwen 2.5 model"
+    Write-Host ""
+    Write-Host "Examples:"
+    Write-Host "  .\install.ps1 -Features idp            # IDP only"
+    Write-Host "  .\install.ps1 -Features chat           # Chat only"
+    Write-Host "  .\install.ps1 -Features `"idp,chat`"     # Both features"
+    Write-Host "  .\install.ps1 -Features all            # Everything"
+    Write-Host "  .\install.ps1                          # Interactive mode"
     exit 0
 }
 
@@ -56,7 +62,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Write-Host ""
 Write-Host "===============================================================" -ForegroundColor Cyan
 Write-Host "                                                               " -ForegroundColor Cyan
-Write-Host "   FARIA - Intelligent Document Processing                     " -ForegroundColor Blue
+Write-Host "   FARIA - AI Toolkit                                          " -ForegroundColor Blue
 Write-Host "                                                               " -ForegroundColor Cyan
 Write-Host "===============================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -68,46 +74,90 @@ Write-Host "System detected: Windows ($Arch)" -ForegroundColor Yellow
 Write-Host "Install directory: $InstallDir" -ForegroundColor Yellow
 Write-Host ""
 
-# Show what will be installed
-Write-Host "This script will install:" -ForegroundColor Blue
+# Show available features
+Write-Host "Available features:" -ForegroundColor Blue
 Write-Host ""
-Write-Host "  Required components:" -ForegroundColor Green
-Write-Host "    - ONNX Runtime    - Model inference engine"
-Write-Host "    - DETR model      - Document layout detection"
-Write-Host "    - Nemotron model  - Table structure detection"
-if (-not $SkipTesseract) {
-    Write-Host "    - Tesseract OCR   - Text extraction"
-} else {
-    Write-Host "    - Tesseract OCR   - (skipped)" -ForegroundColor Yellow
-}
+Write-Host "  idp  - Intelligent Document Processing (~630 MB)" -ForegroundColor Green
+Write-Host "         OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
+Write-Host "         DETR model (layout detection), Nemotron model (tables)"
 Write-Host ""
-Write-Host "  Optional components:" -ForegroundColor Yellow
-Write-Host "    - LLM (llama.cpp + Qwen) - Cross-page table merging"
+Write-Host "  chat - Conversational AI (~535 MB)" -ForegroundColor Green
+Write-Host "         llama.cpp, Qwen 2.5 model"
 Write-Host ""
 
-# Determine LLM installation
-$InstallLLM = $null
-if ($WithLLM) {
-    $InstallLLM = $true
-} elseif ($NoLLM) {
-    $InstallLLM = $false
-} else {
-    Write-Host "The LLM component enables intelligent cross-page table merging." -ForegroundColor Yellow
-    Write-Host "It requires ~535 MB of additional disk space."
+# Prompt for features if not specified
+if ([string]::IsNullOrWhiteSpace($Features)) {
+    Write-Host "Which features do you want to install?" -ForegroundColor Yellow
     Write-Host ""
-    $response = Read-Host "Do you want to install LLM components? (y/N)"
-    $InstallLLM = ($response -eq 'y' -or $response -eq 'Y')
+    Write-Host "  1) idp only      - Document processing"
+    Write-Host "  2) chat only     - Conversational AI"
+    Write-Host "  3) idp + chat    - Both features"
+    Write-Host "  4) Cancel"
+    Write-Host ""
+    $choice = Read-Host "Enter choice [1-4]"
+
+    switch ($choice) {
+        "1" { $Features = "idp" }
+        "2" { $Features = "chat" }
+        "3" { $Features = "idp,chat" }
+        default {
+            Write-Host "Installation cancelled."
+            exit 0
+        }
+    }
+}
+
+# Normalize "all" to actual features
+if ($Features -eq "all") {
+    $Features = "idp,chat"
+}
+
+# Parse features into flags
+$InstallIDP = $false
+$InstallChat = $false
+
+$FeatureArray = $Features -split ','
+foreach ($feature in $FeatureArray) {
+    $feature = $feature.Trim()
+    switch ($feature) {
+        "idp" { $InstallIDP = $true }
+        "chat" { $InstallChat = $true }
+        default {
+            if ($feature) {
+                Write-Host "Warning: Unknown feature '$feature' ignored" -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+# Validate at least one feature selected
+if (-not $InstallIDP -and -not $InstallChat) {
+    Write-Host "Error: No valid features selected" -ForegroundColor Red
+    exit 1
+}
+
+# Ask about LLM for IDP if IDP is selected and -WithLLM not specified
+$InstallIDPLLM = $WithLLM
+if ($InstallIDP -and -not $WithLLM) {
+    Write-Host ""
+    Write-Host "Would you like to install LLM support for IDP?" -ForegroundColor Yellow
+    Write-Host "  This enables advanced document understanding capabilities."
+    Write-Host "  (Requires additional ~500 MB disk space)"
+    Write-Host ""
+    $response = Read-Host "Install LLM for IDP? (y/N)"
+    if ($response -eq 'y' -or $response -eq 'Y') {
+        $InstallIDPLLM = $true
+    }
 }
 
 Write-Host ""
 Write-Host "Installation summary:" -ForegroundColor Blue
-Write-Host "  - ONNX Runtime: yes"
-Write-Host "  - DETR model: yes"
-Write-Host "  - Nemotron model: yes"
-Write-Host "  - Tesseract OCR: $(if ($SkipTesseract) { 'skip' } else { 'yes' })"
-Write-Host "  - LLM components: $(if ($InstallLLM) { 'yes' } else { 'no' })"
+Write-Host "  - IDP (Document Processing): $(if ($InstallIDP) { 'yes' } else { 'no' })"
+if ($InstallIDP) {
+    Write-Host "    - LLM support: $(if ($InstallIDPLLM) { 'yes' } else { 'no' })"
+}
+Write-Host "  - Chat (Conversational AI): $(if ($InstallChat) { 'yes' } else { 'no' })"
 Write-Host "  - GPU support: $(if ($GPU) { 'yes' } else { 'no' })"
-Write-Host "  - DirectML: yes"
 Write-Host ""
 
 $response = Read-Host "Continue with installation? (Y/n)"
@@ -123,49 +173,34 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 # Track installation status
 $InstallFailed = $false
-$TotalSteps = 4
-if ($InstallLLM) { $TotalSteps = 5 }
-if ($SkipTesseract) { $TotalSteps-- }
-
+$TotalSteps = 0
 $CurrentStep = 0
 
-# ============================================================================
-# Step 1: Install ONNX Runtime
-# ============================================================================
-$CurrentStep++
-Write-Host "=================================================================" -ForegroundColor Blue
-Write-Host "  Step $CurrentStep/$TotalSteps`: Installing ONNX Runtime" -ForegroundColor Blue
-Write-Host "=================================================================" -ForegroundColor Blue
-Write-Host ""
-
-$OnnxArgs = @("-InstallDir", $InstallDir)
-if ($GPU) { $OnnxArgs += "-GPU" }
-
-try {
-    & "$ScriptDir\scripts\install-onnxruntime.ps1" @OnnxArgs
-    Write-Host "[OK] ONNX Runtime installed successfully" -ForegroundColor Green
-} catch {
-    Write-Host "[X] ONNX Runtime installation failed: $_" -ForegroundColor Red
-    $InstallFailed = $true
-}
-
-Write-Host ""
+# Calculate total steps
+if ($InstallIDP) { $TotalSteps++ }
+if ($InstallChat) { $TotalSteps++ }
+$TotalSteps++  # Verification
 
 # ============================================================================
-# Step 2: Install Tesseract OCR
+# Install IDP Feature
 # ============================================================================
-if (-not $SkipTesseract) {
+if ($InstallIDP) {
     $CurrentStep++
     Write-Host "=================================================================" -ForegroundColor Blue
-    Write-Host "  Step $CurrentStep/$TotalSteps`: Installing Tesseract OCR" -ForegroundColor Blue
+    Write-Host "  Step $CurrentStep/$TotalSteps`: Installing IDP Feature" -ForegroundColor Blue
     Write-Host "=================================================================" -ForegroundColor Blue
     Write-Host ""
 
+    $IDPArgs = @("-InstallDir", $InstallDir)
+    if ($GPU) { $IDPArgs += "-GPU" }
+    if ($InstallIDPLLM) { $IDPArgs += "-WithLLM" }
+
     try {
-        & "$ScriptDir\scripts\install-tesseract.ps1"
-        Write-Host "[OK] Tesseract OCR installed successfully" -ForegroundColor Green
+        & "$ScriptDir\scripts\install-idp.ps1" @IDPArgs
+        if ($LASTEXITCODE -ne 0) { throw "IDP installation returned exit code $LASTEXITCODE" }
+        Write-Host "[OK] IDP Feature installed successfully" -ForegroundColor Green
     } catch {
-        Write-Host "[X] Tesseract OCR installation failed: $_" -ForegroundColor Red
+        Write-Host "[X] IDP Feature installation failed: $_" -ForegroundColor Red
         $InstallFailed = $true
     }
 
@@ -173,47 +208,29 @@ if (-not $SkipTesseract) {
 }
 
 # ============================================================================
-# Step 3: Install ML Models (DETR + Nemotron)
+# Install Chat Feature
 # ============================================================================
-$CurrentStep++
-Write-Host "=================================================================" -ForegroundColor Blue
-Write-Host "  Step $CurrentStep/$TotalSteps`: Installing ML Models (DETR + Nemotron)" -ForegroundColor Blue
-Write-Host "=================================================================" -ForegroundColor Blue
-Write-Host ""
-
-try {
-    & "$ScriptDir\scripts\install-models.ps1" -InstallDir $InstallDir
-    Write-Host "[OK] ML Models installed successfully" -ForegroundColor Green
-} catch {
-    Write-Host "[X] ML Models installation failed: $_" -ForegroundColor Red
-    $InstallFailed = $true
-}
-
-Write-Host ""
-
-# ============================================================================
-# Step 4: Install LLM (Optional)
-# ============================================================================
-if ($InstallLLM) {
+if ($InstallChat) {
     $CurrentStep++
     Write-Host "=================================================================" -ForegroundColor Blue
-    Write-Host "  Step $CurrentStep/$TotalSteps`: Installing LLM Components" -ForegroundColor Blue
+    Write-Host "  Step $CurrentStep/$TotalSteps`: Installing Chat Feature" -ForegroundColor Blue
     Write-Host "=================================================================" -ForegroundColor Blue
     Write-Host ""
 
     try {
-        & "$ScriptDir\scripts\install-slm.ps1" -InstallDir $InstallDir
-        Write-Host "[OK] LLM Components installed successfully" -ForegroundColor Green
+        & "$ScriptDir\scripts\install-chat.ps1" -InstallDir $InstallDir
+        if ($LASTEXITCODE -ne 0) { throw "Chat installation returned exit code $LASTEXITCODE" }
+        Write-Host "[OK] Chat Feature installed successfully" -ForegroundColor Green
     } catch {
-        Write-Host "[X] LLM Components installation failed: $_" -ForegroundColor Red
-        Write-Host "Note: LLM is optional, continuing with installation..." -ForegroundColor Yellow
+        Write-Host "[X] Chat Feature installation failed: $_" -ForegroundColor Red
+        $InstallFailed = $true
     }
 
     Write-Host ""
 }
 
 # ============================================================================
-# Step 5: Verify Installation
+# Verify Installation
 # ============================================================================
 $CurrentStep++
 Write-Host "=================================================================" -ForegroundColor Blue
@@ -238,6 +255,15 @@ if (-not $InstallFailed) {
     Write-Host "                                                               " -ForegroundColor Cyan
 }
 Write-Host "===============================================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Installed features:" -ForegroundColor Yellow
+if ($InstallIDP) {
+    Write-Host "  - IDP - OpenCV, Tesseract, MuPDF, ONNX Runtime, DETR, Nemotron"
+}
+if ($InstallChat) {
+    Write-Host "  - Chat - llama.cpp, Qwen 2.5"
+}
 Write-Host ""
 
 Write-Host "Next steps:" -ForegroundColor Yellow

@@ -2,6 +2,7 @@
 #
 # Faria Installation Verification Script
 # Checks all required and optional components
+# Reads version requirements from versions.json
 #
 # Usage: ./verify.sh [OPTIONS]
 #
@@ -22,6 +23,10 @@ WARN="${YELLOW}!${NC}"
 
 # Default install directory
 INSTALL_DIR="${HOME}/.faria"
+
+# Get script directory and config path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/../versions.json"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -66,7 +71,51 @@ echo ""
 ALL_REQUIRED_OK=true
 MISSING_COMPONENTS=""
 
-echo -e "${YELLOW}Checking components...${NC}"
+# ============================================================================
+# Version checking functions
+# ============================================================================
+
+# Get minimum version from config
+get_min_version() {
+    local dep=$1
+    if [ -f "${CONFIG_FILE}" ] && command -v jq &> /dev/null; then
+        jq -r ".minimum.${dep} // \"0.0.0\"" "${CONFIG_FILE}"
+    else
+        echo "0.0.0"
+    fi
+}
+
+# Compare versions (returns 0 if current >= min)
+version_gte() {
+    local current=$1
+    local min=$2
+    if [[ "$(printf '%s\n' "$min" "$current" | sort -V | head -n1)" == "$min" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Check version and print result
+check_version() {
+    local name=$1
+    local current=$2
+    local min=$(get_min_version "$name")
+
+    if [ "$current" = "0.0.0" ] || [ -z "$current" ]; then
+        return 1
+    fi
+
+    if version_gte "$current" "$min"; then
+        echo -e "  ${CHECK} ${name}: ${current} (min: ${min})"
+        return 0
+    else
+        echo -e "  ${CROSS} ${name}: ${current} is below minimum ${min}"
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Checking dependency versions...${NC}"
 echo ""
 
 # ============================================================================
@@ -152,21 +201,51 @@ fi
 echo ""
 
 # ============================================================================
-# Check Tesseract OCR
+# Check IDP Dependencies (OpenCV, Tesseract, Leptonica, MuPDF)
 # ============================================================================
-echo -e "${BLUE}Tesseract OCR:${NC}"
+echo -e "${BLUE}IDP Dependencies:${NC}"
 
-if command -v tesseract &> /dev/null; then
-    TESSERACT_VERSION=$(tesseract --version 2>&1 | head -n1 | cut -d' ' -f2)
-    TESSERACT_PATH=$(which tesseract)
-    echo -e "  ${CHECK} Found (${TESSERACT_VERSION})"
-    echo "     ${TESSERACT_PATH}"
+# Check Leptonica
+if pkg-config --exists lept 2>/dev/null; then
+    LEPT_VERSION=$(pkg-config --modversion lept 2>/dev/null || echo "0.0.0")
+    check_version "leptonica" "$LEPT_VERSION"
 else
-    echo -e "  ${CROSS} Not found"
-    echo "     Install: brew install tesseract (macOS) or apt install tesseract-ocr (Linux)"
-    ALL_REQUIRED_OK=false
-    MISSING_COMPONENTS="${MISSING_COMPONENTS}Tesseract, "
+    echo -e "  ${WARN} leptonica: Not found (needed for IDP)"
 fi
+
+# Check Tesseract
+if command -v tesseract &> /dev/null; then
+    TESSERACT_VERSION=$(tesseract --version 2>&1 | head -n1 | sed 's/tesseract //' | cut -d' ' -f1)
+    TESSERACT_PATH=$(which tesseract)
+    if check_version "tesseract" "$TESSERACT_VERSION"; then
+        echo "     Path: ${TESSERACT_PATH}"
+    fi
+else
+    echo -e "  ${WARN} tesseract: Not found (needed for IDP)"
+    echo "     Install: brew install tesseract (macOS) or apt install tesseract-ocr (Linux)"
+fi
+
+# Check OpenCV
+if pkg-config --exists opencv4 2>/dev/null; then
+    OPENCV_VERSION=$(pkg-config --modversion opencv4 2>/dev/null || echo "0.0.0")
+    check_version "opencv" "$OPENCV_VERSION"
+else
+    echo -e "  ${WARN} opencv: Not found (needed for IDP)"
+    echo "     Install: brew install opencv (macOS) or apt install libopencv-dev (Linux)"
+fi
+
+# Check MuPDF
+if command -v mutool &> /dev/null; then
+    MUPDF_VERSION=$(mutool -v 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || echo "installed")
+    echo -e "  ${CHECK} mupdf: ${MUPDF_VERSION}"
+elif pkg-config --exists mupdf 2>/dev/null; then
+    MUPDF_VERSION=$(pkg-config --modversion mupdf 2>/dev/null || echo "installed")
+    echo -e "  ${CHECK} mupdf: ${MUPDF_VERSION}"
+else
+    echo -e "  ${WARN} mupdf: Not found (needed for IDP)"
+    echo "     Install: brew install mupdf (macOS) or apt install mupdf mupdf-tools (Linux)"
+fi
+
 echo ""
 
 # ============================================================================

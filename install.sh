@@ -1,18 +1,20 @@
 #!/bin/bash
 #
 # Faria Installation Script
-# Main orchestration script for installing all Faria dependencies
+# Main orchestration script for installing Faria dependencies
 #
 # Usage: ./install.sh [OPTIONS]
 #
-# This script installs:
-#   Required:
-#     - ONNX Runtime (inference engine)
-#     - DETR model (layout detection)
-#     - Nemotron model (table structure)
-#     - Tesseract OCR (text extraction)
-#   Optional:
-#     - llama.cpp + Qwen model (cross-page table merging)
+# Features:
+#   idp  - Intelligent Document Processing (OpenCV, Tesseract, MuPDF, ONNX, models)
+#   chat - Conversational AI (llama.cpp, Qwen model)
+#
+# Examples:
+#   ./install.sh --features idp          # Install IDP only
+#   ./install.sh --features chat         # Install Chat only
+#   ./install.sh --features idp,chat     # Install both
+#   ./install.sh --features all          # Install everything
+#   ./install.sh                         # Interactive mode
 #
 
 set -e
@@ -28,8 +30,7 @@ NC='\033[0m' # No Color
 # Default options
 INSTALL_DIR="${HOME}/.faria"
 ENABLE_GPU=false
-WITH_LLM=""  # Empty means prompt, "true" or "false" means skip prompt
-SKIP_TESSERACT=false
+FEATURES=""  # Empty means prompt, comma-separated list of features
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,17 +46,9 @@ while [[ $# -gt 0 ]]; do
             ENABLE_GPU=true
             shift
             ;;
-        --with-llm)
-            WITH_LLM="true"
-            shift
-            ;;
-        --no-llm)
-            WITH_LLM="false"
-            shift
-            ;;
-        --skip-tesseract)
-            SKIP_TESSERACT=true
-            shift
+        --features)
+            FEATURES="$2"
+            shift 2
             ;;
         --help|-h)
             echo "Faria Installation Script"
@@ -63,23 +56,27 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
+            echo "  --features LIST    Comma-separated list of features to install"
+            echo "                     Available: idp, chat, all"
             echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
             echo "  --gpu              Enable GPU support (CUDA on Linux)"
-            echo "  --with-llm         Install LLM components without prompting"
-            echo "  --no-llm           Skip LLM components without prompting"
-            echo "  --skip-tesseract   Skip Tesseract if already installed"
             echo "  --help, -h         Show this help message"
             echo ""
-            echo "Components:"
-            echo "  Required:"
-            echo "    - ONNX Runtime    Model inference engine (~50 MB)"
-            echo "    - DETR            Layout detection model (~350 MB)"
-            echo "    - Nemotron        Table structure model (~200 MB)"
-            echo "    - Tesseract OCR   Text extraction (~30 MB)"
+            echo "Features:"
+            echo "  idp   - Intelligent Document Processing (~630 MB)"
+            echo "          OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
+            echo "          DETR model, Nemotron model"
+            echo "          Optional: LLM support (~500 MB extra, prompted during install)"
             echo ""
-            echo "  Optional (LLM for cross-page table merging):"
-            echo "    - llama.cpp       LLM inference engine (~5 MB)"
-            echo "    - Qwen 2.5        Language model (~530 MB)"
+            echo "  chat  - Conversational AI (~535 MB)"
+            echo "          llama.cpp, Qwen 2.5 model"
+            echo ""
+            echo "Examples:"
+            echo "  $0 --features idp           # IDP (prompts for LLM option)"
+            echo "  $0 --features chat          # Chat only"
+            echo "  $0 --features idp,chat      # Both features"
+            echo "  $0 --features all           # Everything"
+            echo "  $0                          # Interactive mode"
             exit 0
             ;;
         *)
@@ -101,7 +98,7 @@ echo -e "${CYAN}║${NC}   ${BLUE}██╔══╝  ██╔══██║�
 echo -e "${CYAN}║${NC}   ${BLUE}██║     ██║  ██║██║  ██║██║██║  ██║${NC}                         ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}   ${BLUE}╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝${NC}                         ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}                                                               ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}   ${GREEN}Intelligent Document Processing${NC}                             ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}   ${GREEN}AI Toolkit                     ${NC}                             ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}                                                               ${CYAN}║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -114,46 +111,88 @@ echo -e "${YELLOW}System detected:${NC} ${OS} (${ARCH})"
 echo -e "${YELLOW}Install directory:${NC} ${INSTALL_DIR}"
 echo ""
 
-# Show what will be installed
-echo -e "${BLUE}This script will install:${NC}"
+# Show available features
+echo -e "${BLUE}Available features:${NC}"
 echo ""
-echo -e "  ${GREEN}Required components:${NC}"
-echo "    • ONNX Runtime    - Model inference engine"
-echo "    • DETR model      - Document layout detection"
-echo "    • Nemotron model  - Table structure detection"
-if [ "${SKIP_TESSERACT}" = false ]; then
-    echo "    • Tesseract OCR   - Text extraction"
-else
-    echo -e "    • Tesseract OCR   - ${YELLOW}(skipped)${NC}"
-fi
+echo -e "  ${GREEN}idp${NC}  - Intelligent Document Processing (~630 MB)"
+echo "         OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
+echo "         DETR model (layout detection), Nemotron model (tables)"
 echo ""
-echo -e "  ${YELLOW}Optional components:${NC}"
-echo "    • LLM (llama.cpp + Qwen) - Cross-page table merging"
+echo -e "  ${GREEN}chat${NC} - Conversational AI (~535 MB)"
+echo "         llama.cpp, Qwen 2.5 model"
 echo ""
 
-# Prompt for LLM if not specified
-if [ -z "${WITH_LLM}" ]; then
-    echo -e "${YELLOW}The LLM component enables intelligent cross-page table merging.${NC}"
-    echo "It requires ~535 MB of additional disk space."
+# Prompt for features if not specified
+if [ -z "${FEATURES}" ]; then
+    echo -e "${YELLOW}Which features do you want to install?${NC}"
     echo ""
-    read -p "Do you want to install LLM components? (y/N): " -n 1 -r
+    echo "  1) idp only      - Document processing"
+    echo "  2) chat only     - Conversational AI"
+    echo "  3) idp + chat    - Both features"
+    echo "  4) Cancel"
+    echo ""
+    read -p "Enter choice [1-4]: " -n 1 -r
+    echo
+    case $REPLY in
+        1) FEATURES="idp" ;;
+        2) FEATURES="chat" ;;
+        3) FEATURES="idp,chat" ;;
+        4|*)
+            echo "Installation cancelled."
+            exit 0
+            ;;
+    esac
+fi
+
+# Normalize "all" to actual features
+if [ "${FEATURES}" = "all" ]; then
+    FEATURES="idp,chat"
+fi
+
+# Parse features into flags
+INSTALL_IDP=false
+INSTALL_CHAT=false
+
+IFS=',' read -ra FEATURE_ARRAY <<< "${FEATURES}"
+for feature in "${FEATURE_ARRAY[@]}"; do
+    feature=$(echo "$feature" | tr -d ' ')
+    case "$feature" in
+        idp) INSTALL_IDP=true ;;
+        chat) INSTALL_CHAT=true ;;
+        *) echo -e "${YELLOW}Warning: Unknown feature '${feature}' ignored${NC}" ;;
+    esac
+done
+
+# Validate at least one feature selected
+if [ "${INSTALL_IDP}" = false ] && [ "${INSTALL_CHAT}" = false ]; then
+    echo -e "${RED}Error: No valid features selected${NC}"
+    exit 1
+fi
+
+# Ask about LLM for IDP if IDP is selected
+INSTALL_IDP_LLM=false
+if [ "${INSTALL_IDP}" = true ]; then
+    echo ""
+    echo -e "${YELLOW}Would you like to install LLM support for IDP?${NC}"
+    echo "  This enables advanced document understanding capabilities."
+    echo "  (Requires additional ~500 MB disk space)"
+    echo ""
+    read -p "Install LLM for IDP? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        WITH_LLM="true"
-    else
-        WITH_LLM="false"
+        INSTALL_IDP_LLM=true
     fi
 fi
 
 echo ""
 echo -e "${BLUE}Installation summary:${NC}"
-echo "  • ONNX Runtime: yes"
-echo "  • DETR model: yes"
-echo "  • Nemotron model: yes"
-echo "  • Tesseract OCR: $([ "${SKIP_TESSERACT}" = true ] && echo "skip" || echo "yes")"
-echo "  • LLM components: $([ "${WITH_LLM}" = "true" ] && echo "yes" || echo "no")"
+echo "  • IDP (Document Processing): $([ "${INSTALL_IDP}" = true ] && echo "yes" || echo "no")"
+if [ "${INSTALL_IDP}" = true ]; then
+    echo "    └─ LLM support: $([ "${INSTALL_IDP_LLM}" = true ] && echo "yes" || echo "no")"
+fi
+echo "  • Chat (Conversational AI): $([ "${INSTALL_CHAT}" = true ] && echo "yes" || echo "no")"
 if [ "${OS}" = "Darwin" ]; then
-    echo "  • Core ML: yes"
+    echo "  • Core ML: yes (if IDP selected)"
 else
     echo "  • GPU support: $([ "${ENABLE_GPU}" = true ] && echo "yes" || echo "no")"
 fi
@@ -173,42 +212,42 @@ mkdir -p "${INSTALL_DIR}"
 
 # Track installation status
 INSTALL_FAILED=false
+CURRENT_STEP=0
+TOTAL_STEPS=0
 
-# ============================================================================
-# Step 1: Install ONNX Runtime
-# ============================================================================
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}  Step 1/$([ "${WITH_LLM}" = "true" ] && echo "5" || echo "4"): Installing ONNX Runtime${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-GPU_FLAG=""
-if [ "${ENABLE_GPU}" = true ]; then
-    GPU_FLAG="--gpu"
+# Calculate total steps
+if [ "${INSTALL_IDP}" = true ]; then
+    TOTAL_STEPS=$((TOTAL_STEPS + 1))  # IDP orchestrator
 fi
-
-if "${SCRIPT_DIR}/scripts/install-onnxruntime.sh" --install-dir "${INSTALL_DIR}" ${GPU_FLAG}; then
-    echo -e "${GREEN}✓ ONNX Runtime installed successfully${NC}"
-else
-    echo -e "${RED}✗ ONNX Runtime installation failed${NC}"
-    INSTALL_FAILED=true
+if [ "${INSTALL_CHAT}" = true ]; then
+    TOTAL_STEPS=$((TOTAL_STEPS + 1))  # Chat orchestrator
 fi
-
-echo ""
+TOTAL_STEPS=$((TOTAL_STEPS + 1))  # Verification
 
 # ============================================================================
-# Step 2: Install Tesseract OCR
+# Install IDP Feature
 # ============================================================================
-if [ "${SKIP_TESSERACT}" = false ]; then
+if [ "${INSTALL_IDP}" = true ]; then
+    CURRENT_STEP=$((CURRENT_STEP + 1))
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}  Step 2/$([ "${WITH_LLM}" = "true" ] && echo "5" || echo "4"): Installing Tesseract OCR${NC}"
+    echo -e "${BLUE}  Step ${CURRENT_STEP}/${TOTAL_STEPS}: Installing IDP Feature${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    if "${SCRIPT_DIR}/scripts/install-tesseract.sh"; then
-        echo -e "${GREEN}✓ Tesseract OCR installed successfully${NC}"
+    GPU_FLAG=""
+    if [ "${ENABLE_GPU}" = true ]; then
+        GPU_FLAG="--gpu"
+    fi
+
+    LLM_FLAG=""
+    if [ "${INSTALL_IDP_LLM}" = true ]; then
+        LLM_FLAG="--with-llm"
+    fi
+
+    if "${SCRIPT_DIR}/scripts/install-idp.sh" --install-dir "${INSTALL_DIR}" ${GPU_FLAG} ${LLM_FLAG}; then
+        echo -e "${GREEN}✓ IDP Feature installed successfully${NC}"
     else
-        echo -e "${RED}✗ Tesseract OCR installation failed${NC}"
+        echo -e "${RED}✗ IDP Feature installation failed${NC}"
         INSTALL_FAILED=true
     fi
 
@@ -216,50 +255,31 @@ if [ "${SKIP_TESSERACT}" = false ]; then
 fi
 
 # ============================================================================
-# Step 3: Install ML Models (DETR + Nemotron)
+# Install Chat Feature
 # ============================================================================
-STEP_NUM=$((SKIP_TESSERACT ? 2 : 3))
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}  Step ${STEP_NUM}/$([ "${WITH_LLM}" = "true" ] && echo "5" || echo "4"): Installing ML Models (DETR + Nemotron)${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-if "${SCRIPT_DIR}/scripts/install-models.sh" --install-dir "${INSTALL_DIR}"; then
-    echo -e "${GREEN}✓ ML Models installed successfully${NC}"
-else
-    echo -e "${RED}✗ ML Models installation failed${NC}"
-    INSTALL_FAILED=true
-fi
-
-echo ""
-
-# ============================================================================
-# Step 4: Install LLM (Optional)
-# ============================================================================
-if [ "${WITH_LLM}" = "true" ]; then
-    STEP_NUM=$((STEP_NUM + 1))
+if [ "${INSTALL_CHAT}" = true ]; then
+    CURRENT_STEP=$((CURRENT_STEP + 1))
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}  Step ${STEP_NUM}/5: Installing LLM Components${NC}"
+    echo -e "${BLUE}  Step ${CURRENT_STEP}/${TOTAL_STEPS}: Installing Chat Feature${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    if "${SCRIPT_DIR}/scripts/install-slm.sh" --install-dir "${INSTALL_DIR}"; then
-        echo -e "${GREEN}✓ LLM Components installed successfully${NC}"
+    if "${SCRIPT_DIR}/scripts/install-chat.sh" --install-dir "${INSTALL_DIR}"; then
+        echo -e "${GREEN}✓ Chat Feature installed successfully${NC}"
     else
-        echo -e "${RED}✗ LLM Components installation failed${NC}"
-        # LLM is optional, don't fail the whole installation
-        echo -e "${YELLOW}Note: LLM is optional, continuing with installation...${NC}"
+        echo -e "${RED}✗ Chat Feature installation failed${NC}"
+        INSTALL_FAILED=true
     fi
 
     echo ""
 fi
 
 # ============================================================================
-# Step 5: Verify Installation
+# Verify Installation
 # ============================================================================
-STEP_NUM=$((STEP_NUM + 1))
+CURRENT_STEP=$((CURRENT_STEP + 1))
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}  Step ${STEP_NUM}: Verifying Installation${NC}"
+echo -e "${BLUE}  Step ${CURRENT_STEP}/${TOTAL_STEPS}: Verifying Installation${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
@@ -280,6 +300,15 @@ else
     echo -e "${CYAN}║${NC}                                                               ${CYAN}║${NC}"
 fi
 echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+echo -e "${YELLOW}Installed features:${NC}"
+if [ "${INSTALL_IDP}" = true ]; then
+    echo "  • IDP - OpenCV, Tesseract, MuPDF, ONNX Runtime, DETR, Nemotron"
+fi
+if [ "${INSTALL_CHAT}" = true ]; then
+    echo "  • Chat - llama.cpp, Qwen 2.5"
+fi
 echo ""
 
 echo -e "${YELLOW}Next steps:${NC}"

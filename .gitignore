@@ -2,6 +2,9 @@
 .DS_Store
 Thumbs.db
 
+# AI assistant context
+CLAUDE.md
+
 # IDE
 .idea/
 .vscode/
@@ -18,8 +21,8 @@ venv/
 env/
 .env
 *.egg-info/
-dist/
-build/
+
+# Note: dist/ and build/ are NOT ignored - they contain the installer build system
 
 # Model files (don't commit large binaries)
 *.onnx

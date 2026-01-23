@@ -113,22 +113,85 @@ if (Test-Path $NemotronPath) {
 Write-Host ""
 
 # ============================================================================
-# Check Tesseract OCR
+# Check IDP Dependencies (OpenCV, Tesseract, Leptonica, MuPDF)
 # ============================================================================
-Write-Host "Tesseract OCR:" -ForegroundColor Blue
+Write-Host "IDP Dependencies:" -ForegroundColor Blue
 
+# Check OpenCV
+$OpenCVDir = "$InstallDir\lib\opencv"
+$OpenCVFound = $false
+$OpenCVPath = ""
+
+# Check in install directory
+$OpenCVDll = Get-ChildItem -Path "$OpenCVDir" -Recurse -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($OpenCVDll) {
+    $OpenCVFound = $true
+    $OpenCVPath = $OpenCVDll.FullName
+}
+
+# Check via environment variable
+if (-not $OpenCVFound -and $env:OPENCV_DIR) {
+    $OpenCVDll = Get-ChildItem -Path "$env:OPENCV_DIR" -Recurse -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($OpenCVDll) {
+        $OpenCVFound = $true
+        $OpenCVPath = $OpenCVDll.FullName
+    }
+}
+
+if ($OpenCVFound) {
+    Write-Host "  [OK] OpenCV: Found" -ForegroundColor Green
+    Write-Host "     $OpenCVPath"
+} else {
+    Write-Host "  [!] OpenCV: Not found (needed for IDP)" -ForegroundColor Yellow
+    Write-Host "     Install: choco install opencv"
+}
+
+# Check Tesseract
 $TesseractCmd = Get-Command tesseract -ErrorAction SilentlyContinue
 
 if ($TesseractCmd) {
     $TesseractVersion = (& tesseract --version 2>&1 | Select-Object -First 1) -replace 'tesseract ', ''
-    Write-Host "  [OK] Found ($TesseractVersion)" -ForegroundColor Green
+    Write-Host "  [OK] Tesseract: $TesseractVersion" -ForegroundColor Green
     Write-Host "     $($TesseractCmd.Source)"
 } else {
-    Write-Host "  [X] Not found" -ForegroundColor Red
-    Write-Host "     Install from: https://github.com/UB-Mannheim/tesseract/wiki"
-    $AllRequiredOK = $false
-    $MissingComponents += "Tesseract"
+    Write-Host "  [!] Tesseract: Not found (needed for IDP)" -ForegroundColor Yellow
+    Write-Host "     Install: https://github.com/UB-Mannheim/tesseract/wiki"
 }
+
+# Check Leptonica (bundled with Tesseract on Windows)
+if ($TesseractCmd) {
+    Write-Host "  [OK] Leptonica: Included with Tesseract" -ForegroundColor Green
+} else {
+    Write-Host "  [!] Leptonica: Not found (bundled with Tesseract)" -ForegroundColor Yellow
+}
+
+# Check MuPDF
+$MuToolPath = "$InstallDir\bin\mutool.exe"
+$MuToolCmd = Get-Command mutool -ErrorAction SilentlyContinue
+$MuPDFFound = $false
+$MuPDFPath = ""
+
+if (Test-Path $MuToolPath) {
+    $MuPDFFound = $true
+    $MuPDFPath = $MuToolPath
+} elseif ($MuToolCmd) {
+    $MuPDFFound = $true
+    $MuPDFPath = $MuToolCmd.Source
+}
+
+if ($MuPDFFound) {
+    try {
+        $MuPDFVersion = (& $MuPDFPath -v 2>&1 | Select-Object -First 1)
+        Write-Host "  [OK] MuPDF: $MuPDFVersion" -ForegroundColor Green
+    } catch {
+        Write-Host "  [OK] MuPDF: Found" -ForegroundColor Green
+    }
+    Write-Host "     $MuPDFPath"
+} else {
+    Write-Host "  [!] MuPDF: Not found (needed for IDP)" -ForegroundColor Yellow
+    Write-Host "     Install: choco install mupdf"
+}
+
 Write-Host ""
 
 # ============================================================================
@@ -195,7 +258,7 @@ if ($AllRequiredOK) {
     Write-Host "Missing: $($MissingComponents -join ', ')" -ForegroundColor Red
     Write-Host ""
     Write-Host "Run the installation scripts to install missing components:"
-    Write-Host "  .\scripts\install.ps1"
+    Write-Host "  .\install.ps1 -Features idp"
     Write-Host ""
     exit 1
 }
