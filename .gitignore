@@ -4,6 +4,10 @@ Thumbs.db
 
 # AI assistant context
 CLAUDE.md
+COPILOT.md
+.claude
+.cursor
+.copilot
 
 # IDE
 .idea/

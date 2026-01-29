@@ -154,31 +154,15 @@ try {
             }
 
             Push-Location $WorkDir
-            & python $DETRExportScript
+            & python $DETRExportScript --output $DETRModelPath
             Pop-Location
 
-            # Find and move the output file
-            $DETROutput = Get-ChildItem -Path $WorkDir -Filter "*.onnx" -Recurse |
-                          Where-Object { $_.LastWriteTime -gt (Get-Item $VenvDir).LastWriteTime } |
-                          Select-Object -First 1
-
-            if (-not $DETROutput) {
-                # Try common output names
-                foreach ($name in @("detr_layout_detection.onnx", "model.onnx", "detr.onnx")) {
-                    $testPath = Join-Path $WorkDir $name
-                    if (Test-Path $testPath) {
-                        $DETROutput = Get-Item $testPath
-                        break
-                    }
-                }
-            }
-
-            if ($DETROutput) {
-                Move-Item -Path $DETROutput.FullName -Destination $DETRModelPath -Force
+            if (Test-Path $DETRModelPath) {
                 $DETRSize = [math]::Round((Get-Item $DETRModelPath).Length / 1MB, 1)
                 Write-Host "  DETR model installed: $DETRModelPath ($DETRSize MB)" -ForegroundColor Green
             } else {
                 Write-Host "Error: DETR ONNX file not found after export" -ForegroundColor Red
+                Write-Host "  Expected output: $DETRModelPath"
                 exit 1
             }
         }
@@ -232,34 +216,15 @@ try {
                 exit 1
             }
 
-            & python $NemotronExportScript
+            & python $NemotronExportScript --output $NemotronModelPath
             Pop-Location
 
-            # Find and move the output file
-            $NemotronOutput = Get-ChildItem -Path $WorkDir -Filter "*.onnx" -Recurse |
-                              Where-Object { $_.LastWriteTime -gt (Get-Item $NemotronRepo).CreationTime } |
-                              Select-Object -First 1
-
-            if (-not $NemotronOutput) {
-                # Try common output names
-                foreach ($name in @("nemotron_table_fixed.onnx", "nemotron_table_structure.onnx", "nemotron.onnx", "model.onnx")) {
-                    foreach ($dir in @($WorkDir, $NemotronRepo)) {
-                        $testPath = Join-Path $dir $name
-                        if (Test-Path $testPath) {
-                            $NemotronOutput = Get-Item $testPath
-                            break
-                        }
-                    }
-                    if ($NemotronOutput) { break }
-                }
-            }
-
-            if ($NemotronOutput) {
-                Move-Item -Path $NemotronOutput.FullName -Destination $NemotronModelPath -Force
+            if (Test-Path $NemotronModelPath) {
                 $NemotronSize = [math]::Round((Get-Item $NemotronModelPath).Length / 1MB, 1)
                 Write-Host "  Nemotron model installed: $NemotronModelPath ($NemotronSize MB)" -ForegroundColor Green
             } else {
                 Write-Host "Error: Nemotron ONNX file not found after export" -ForegroundColor Red
+                Write-Host "  Expected output: $NemotronModelPath"
                 exit 1
             }
         }
