@@ -191,9 +191,9 @@ if ($InstallIDP) {
     Write-Host "=================================================================" -ForegroundColor Blue
     Write-Host ""
 
-    $IDPArgs = @("-InstallDir", $InstallDir)
-    if ($GPU) { $IDPArgs += "-GPU" }
-    if ($InstallIDPLLM) { $IDPArgs += "-WithLLM" }
+    $IDPArgs = @{InstallDir = $InstallDir}
+    if ($GPU) { $IDPArgs.GPU = $true }
+    if ($InstallIDPLLM) { $IDPArgs.WithLLM = $true }
 
     try {
         & "$ScriptDir\scripts\install-idp.ps1" @IDPArgs

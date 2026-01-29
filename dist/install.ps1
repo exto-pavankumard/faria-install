@@ -1366,31 +1366,15 @@ function Invoke-InstallModels {
                 }
     
                 Push-Location $WorkDir
-                & python $DETRExportScript
+                & python $DETRExportScript --output $DETRModelPath
                 Pop-Location
-    
-                # Find and move the output file
-                $DETROutput = Get-ChildItem -Path $WorkDir -Filter "*.onnx" -Recurse |
-                              Where-Object { $_.LastWriteTime -gt (Get-Item $VenvDir).LastWriteTime } |
-                              Select-Object -First 1
-    
-                if (-not $DETROutput) {
-                    # Try common output names
-                    foreach ($name in @("detr_layout_detection.onnx", "model.onnx", "detr.onnx")) {
-                        $testPath = Join-Path $WorkDir $name
-                        if (Test-Path $testPath) {
-                            $DETROutput = Get-Item $testPath
-                            break
-                        }
-                    }
-                }
-    
-                if ($DETROutput) {
-                    Move-Item -Path $DETROutput.FullName -Destination $DETRModelPath -Force
+
+                if (Test-Path $DETRModelPath) {
                     $DETRSize = [math]::Round((Get-Item $DETRModelPath).Length / 1MB, 1)
                     Write-Host "  DETR model installed: $DETRModelPath ($DETRSize MB)" -ForegroundColor Green
                 } else {
                     Write-Host "Error: DETR ONNX file not found after export" -ForegroundColor Red
+                    Write-Host "  Expected output: $DETRModelPath"
                     exit 1
                 }
             }
@@ -1444,34 +1428,15 @@ function Invoke-InstallModels {
                     exit 1
                 }
     
-                & python $NemotronExportScript
+                & python $NemotronExportScript --output $NemotronModelPath
                 Pop-Location
-    
-                # Find and move the output file
-                $NemotronOutput = Get-ChildItem -Path $WorkDir -Filter "*.onnx" -Recurse |
-                                  Where-Object { $_.LastWriteTime -gt (Get-Item $NemotronRepo).CreationTime } |
-                                  Select-Object -First 1
-    
-                if (-not $NemotronOutput) {
-                    # Try common output names
-                    foreach ($name in @("nemotron_table_fixed.onnx", "nemotron_table_structure.onnx", "nemotron.onnx", "model.onnx")) {
-                        foreach ($dir in @($WorkDir, $NemotronRepo)) {
-                            $testPath = Join-Path $dir $name
-                            if (Test-Path $testPath) {
-                                $NemotronOutput = Get-Item $testPath
-                                break
-                            }
-                        }
-                        if ($NemotronOutput) { break }
-                    }
-                }
-    
-                if ($NemotronOutput) {
-                    Move-Item -Path $NemotronOutput.FullName -Destination $NemotronModelPath -Force
+
+                if (Test-Path $NemotronModelPath) {
                     $NemotronSize = [math]::Round((Get-Item $NemotronModelPath).Length / 1MB, 1)
                     Write-Host "  Nemotron model installed: $NemotronModelPath ($NemotronSize MB)" -ForegroundColor Green
                 } else {
                     Write-Host "Error: Nemotron ONNX file not found after export" -ForegroundColor Red
+                    Write-Host "  Expected output: $NemotronModelPath"
                     exit 1
                 }
             }
@@ -2050,16 +2015,16 @@ function Invoke-InstallIDP {
         param(
             [string]$StepName,
             [string]$Script,
-            [string[]]$Arguments = @()
+            [hashtable]$Arguments = @{}
         )
-    
+
         $script:CurrentStep++
         Write-Host ""
         Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
         Write-Host "  Step $($script:CurrentStep)/$TotalSteps`: $StepName" -ForegroundColor Blue
         Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
         Write-Host ""
-    
+
         try {
             if ($Arguments.Count -gt 0) {
                 & "$ScriptDir\$Script" @Arguments
@@ -2080,25 +2045,25 @@ function Invoke-InstallIDP {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     
     # Step 1: Install OpenCV
-    Invoke-Step -StepName "Installing OpenCV" -Script "install-opencv.ps1" -Arguments @("-InstallDir", $InstallDir)
-    
+    Invoke-Step -StepName "Installing OpenCV" -Script "install-opencv.ps1" -Arguments @{InstallDir = $InstallDir}
+
     # Step 2: Install Tesseract (includes Leptonica)
     Invoke-Step -StepName "Installing Tesseract OCR" -Script "install-tesseract.ps1"
-    
+
     # Step 3: Install MuPDF
-    Invoke-Step -StepName "Installing MuPDF" -Script "install-mupdf.ps1" -Arguments @("-InstallDir", $InstallDir)
-    
+    Invoke-Step -StepName "Installing MuPDF" -Script "install-mupdf.ps1" -Arguments @{InstallDir = $InstallDir}
+
     # Step 4: Install ONNX Runtime
-    $OnnxArgs = @("-InstallDir", $InstallDir)
-    if ($GPU) { $OnnxArgs += "-GPU" }
+    $OnnxArgs = @{InstallDir = $InstallDir}
+    if ($GPU) { $OnnxArgs.GPU = $true }
     Invoke-Step -StepName "Installing ONNX Runtime" -Script "install-onnxruntime.ps1" -Arguments $OnnxArgs
-    
+
     # Step 5: Install ML Models (DETR + Nemotron)
-    Invoke-Step -StepName "Installing ML Models" -Script "install-models.ps1" -Arguments @("-InstallDir", $InstallDir)
-    
+    Invoke-Step -StepName "Installing ML Models" -Script "install-models.ps1" -Arguments @{InstallDir = $InstallDir}
+
     # Step 6 (optional): Install LLM for IDP
     if ($WithLLM) {
-        Invoke-Step -StepName "Installing LLM for IDP" -Script "install-slm.ps1" -Arguments @("-InstallDir", $InstallDir)
+        Invoke-Step -StepName "Installing LLM for IDP" -Script "install-slm.ps1" -Arguments @{InstallDir = $InstallDir}
     }
     
     # Final Summary
