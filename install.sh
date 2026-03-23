@@ -177,8 +177,12 @@ if [ "${INSTALL_IDP}" = true ]; then
     echo "  This enables advanced document understanding capabilities."
     echo "  (Requires additional ~500 MB disk space)"
     echo ""
-    read -p "Install LLM for IDP? (y/N): " -n 1 -r
-    echo
+    if [ -t 0 ]; then
+        read -p "Install LLM for IDP? (y/N): " -n 1 -r
+        echo
+    else
+        REPLY="N"
+    fi
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         INSTALL_IDP_LLM=true
     fi
@@ -198,8 +202,12 @@ else
 fi
 echo ""
 
-read -p "Continue with installation? (Y/n): " -n 1 -r
-echo
+if [ -t 0 ]; then
+    read -p "Continue with installation? (Y/n): " -n 1 -r
+    echo
+else
+    REPLY="Y"
+fi
 if [[ $REPLY =~ ^[Nn]$ ]]; then
     echo "Installation cancelled."
     exit 0
