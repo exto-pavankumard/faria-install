@@ -94,34 +94,72 @@ case "${OS}" in
         echo "  Distribution: ${DISTRO}"
         echo ""
 
+        # Distro repos ship OpenCV 4.5/4.6 which causes dependency mismatches.
+        # Build 4.10.0 from source to guarantee a compatible version.
+        OPENCV_BUILD_VERSION="4.10.0"
+
+        echo -e "${YELLOW}Installing build dependencies...${NC}"
         case "${DISTRO}" in
             ubuntu|debian|linuxmint|pop)
-                echo -e "${YELLOW}Installing via apt...${NC}"
                 sudo apt update
-                sudo apt install -y libopencv-dev
+                sudo apt install -y build-essential cmake git pkg-config \
+                    libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
+                    libv4l-dev libjpeg-dev libpng-dev libtiff-dev \
+                    libatlas-base-dev python3-dev python3-numpy libtbb-dev
                 ;;
             fedora|rhel|centos|rocky|almalinux)
-                echo -e "${YELLOW}Installing via dnf...${NC}"
-                sudo dnf install -y opencv opencv-devel
+                sudo dnf install -y gcc gcc-c++ cmake git pkgconfig \
+                    gtk3-devel ffmpeg-devel libv4l-devel \
+                    libjpeg-turbo-devel libpng-devel libtiff-devel \
+                    python3-devel python3-numpy tbb-devel
                 ;;
             arch|manjaro|endeavouros)
-                echo -e "${YELLOW}Installing via pacman...${NC}"
-                sudo pacman -S --noconfirm opencv
+                sudo pacman -S --noconfirm base-devel cmake git pkg-config \
+                    gtk3 ffmpeg libjpeg-turbo libpng libtiff \
+                    python python-numpy intel-tbb
                 ;;
             opensuse*)
-                echo -e "${YELLOW}Installing via zypper...${NC}"
-                sudo zypper install -y opencv opencv-devel
+                sudo zypper install -y gcc gcc-c++ cmake git pkg-config \
+                    gtk3-devel ffmpeg-devel libv4l-devel \
+                    libjpeg62-devel libpng16-devel libtiff-devel \
+                    python3-devel python3-numpy tbb-devel
                 ;;
             *)
                 echo -e "${RED}Unsupported Linux distribution: ${DISTRO}${NC}"
-                echo ""
-                echo "Please install OpenCV manually:"
-                echo "  - Ubuntu/Debian: sudo apt install libopencv-dev"
-                echo "  - Fedora/RHEL: sudo dnf install opencv opencv-devel"
-                echo "  - Arch: sudo pacman -S opencv"
                 exit 1
                 ;;
         esac
+
+        echo ""
+        echo -e "${YELLOW}Downloading OpenCV ${OPENCV_BUILD_VERSION} source...${NC}"
+        BUILD_DIR="$(mktemp -d)"
+        curl -fL "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz" \
+            -o "${BUILD_DIR}/opencv.tar.gz"
+
+        echo -e "${YELLOW}Building OpenCV ${OPENCV_BUILD_VERSION} (this may take 10-20 minutes)...${NC}"
+        tar -xzf "${BUILD_DIR}/opencv.tar.gz" -C "${BUILD_DIR}"
+        mkdir -p "${BUILD_DIR}/opencv-${OPENCV_BUILD_VERSION}/build"
+        cd "${BUILD_DIR}/opencv-${OPENCV_BUILD_VERSION}/build"
+
+        cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DOPENCV_GENERATE_PKGCONFIG=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_PERF_TESTS=OFF \
+            -DBUILD_EXAMPLES=OFF
+
+        make -j"$(nproc)"
+        sudo make install
+        sudo ldconfig
+
+        # Persist the pkg-config path so opencv4.pc is always discoverable
+        echo 'export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH' \
+            | sudo tee /etc/profile.d/opencv.sh > /dev/null
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+
+        cd - > /dev/null
+        rm -rf "${BUILD_DIR}"
         ;;
     *)
         echo -e "${RED}Unsupported OS: ${OS}${NC}"
