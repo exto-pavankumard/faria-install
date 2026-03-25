@@ -23,6 +23,7 @@ WARN="${YELLOW}!${NC}"
 
 # Default install directory
 INSTALL_DIR="${HOME}/.faria"
+SYSTEM_INSTALL=false
 
 # Get script directory and config path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --system)
+            SYSTEM_INSTALL=true
+            shift
+            ;;
         --help|-h)
             echo "Faria Installation Verification Script"
             echo ""
@@ -42,6 +47,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --install-dir DIR  Check installation in DIR (default: ~/.faria)"
+            echo "  --system           Verify a system-wide install (/usr/local)"
             echo "  --help, -h         Show this help message"
             exit 0
             ;;
@@ -139,9 +145,16 @@ esac
 # Check environment variable first
 ONNX_PATH="${FARIA_ONNXRUNTIME_PATH:-}"
 
-# Check default location
-if [ -z "${ONNX_PATH}" ] || [ ! -f "${ONNX_PATH}" ]; then
-    ONNX_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+if [ "${SYSTEM_INSTALL}" = true ]; then
+    # System install: library lands in /usr/local/lib
+    if [ -z "${ONNX_PATH}" ] || [ ! -f "${ONNX_PATH}" ]; then
+        ONNX_PATH="/usr/local/lib/${LIB_NAME}"
+    fi
+else
+    # User install: library lands in <install-dir>/lib/onnxruntime
+    if [ -z "${ONNX_PATH}" ] || [ ! -f "${ONNX_PATH}" ]; then
+        ONNX_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+    fi
 fi
 
 if [ -f "${ONNX_PATH}" ]; then
@@ -150,9 +163,31 @@ if [ -f "${ONNX_PATH}" ]; then
     echo "     ${ONNX_PATH}"
 else
     echo -e "  ${CROSS} Not found"
-    echo "     Expected: ${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+    echo "     Expected: ${ONNX_PATH}"
     ALL_REQUIRED_OK=false
     MISSING_COMPONENTS="${MISSING_COMPONENTS}ONNX Runtime, "
+fi
+echo ""
+
+# ============================================================================
+# Check CLIP Model
+# ============================================================================
+echo -e "${BLUE}CLIP Model (Visual Embedding):${NC}"
+
+CLIP_PATH="${FARIA_CLIP_MODEL_PATH:-}"
+if [ -z "${CLIP_PATH}" ] || [ ! -f "${CLIP_PATH}" ]; then
+    CLIP_PATH="${INSTALL_DIR}/models/clip_visual.onnx"
+fi
+
+if [ -f "${CLIP_PATH}" ]; then
+    MODEL_SIZE=$(du -h "${CLIP_PATH}" | cut -f1)
+    echo -e "  ${CHECK} Found (${MODEL_SIZE})"
+    echo "     ${CLIP_PATH}"
+else
+    echo -e "  ${CROSS} Not found"
+    echo "     Expected: ${INSTALL_DIR}/models/clip_visual.onnx"
+    ALL_REQUIRED_OK=false
+    MISSING_COMPONENTS="${MISSING_COMPONENTS}CLIP Model, "
 fi
 echo ""
 

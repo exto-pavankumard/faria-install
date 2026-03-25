@@ -15,7 +15,7 @@
 #   .\install.ps1 -Features all
 #
 
-# Build date: 2026-01-23T19:47:45Z
+# Build date: 2026-03-26T05:52:31Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 param(
@@ -1368,7 +1368,7 @@ function Invoke-InstallModels {
                 Push-Location $WorkDir
                 & python $DETRExportScript --output $DETRModelPath
                 Pop-Location
-
+    
                 if (Test-Path $DETRModelPath) {
                     $DETRSize = [math]::Round((Get-Item $DETRModelPath).Length / 1MB, 1)
                     Write-Host "  DETR model installed: $DETRModelPath ($DETRSize MB)" -ForegroundColor Green
@@ -1430,7 +1430,7 @@ function Invoke-InstallModels {
     
                 & python $NemotronExportScript --output $NemotronModelPath
                 Pop-Location
-
+    
                 if (Test-Path $NemotronModelPath) {
                     $NemotronSize = [math]::Round((Get-Item $NemotronModelPath).Length / 1MB, 1)
                     Write-Host "  Nemotron model installed: $NemotronModelPath ($NemotronSize MB)" -ForegroundColor Green
@@ -2017,14 +2017,14 @@ function Invoke-InstallIDP {
             [string]$Script,
             [hashtable]$Arguments = @{}
         )
-
+    
         $script:CurrentStep++
         Write-Host ""
         Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
         Write-Host "  Step $($script:CurrentStep)/$TotalSteps`: $StepName" -ForegroundColor Blue
         Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
         Write-Host ""
-
+    
         try {
             if ($Arguments.Count -gt 0) {
                 & "$ScriptDir\$Script" @Arguments
@@ -2046,21 +2046,21 @@ function Invoke-InstallIDP {
     
     # Step 1: Install OpenCV
     Invoke-Step -StepName "Installing OpenCV" -Script "install-opencv.ps1" -Arguments @{InstallDir = $InstallDir}
-
+    
     # Step 2: Install Tesseract (includes Leptonica)
     Invoke-Step -StepName "Installing Tesseract OCR" -Script "install-tesseract.ps1"
-
+    
     # Step 3: Install MuPDF
     Invoke-Step -StepName "Installing MuPDF" -Script "install-mupdf.ps1" -Arguments @{InstallDir = $InstallDir}
-
+    
     # Step 4: Install ONNX Runtime
     $OnnxArgs = @{InstallDir = $InstallDir}
     if ($GPU) { $OnnxArgs.GPU = $true }
     Invoke-Step -StepName "Installing ONNX Runtime" -Script "install-onnxruntime.ps1" -Arguments $OnnxArgs
-
+    
     # Step 5: Install ML Models (DETR + Nemotron)
     Invoke-Step -StepName "Installing ML Models" -Script "install-models.ps1" -Arguments @{InstallDir = $InstallDir}
-
+    
     # Step 6 (optional): Install LLM for IDP
     if ($WithLLM) {
         Invoke-Step -StepName "Installing LLM for IDP" -Script "install-slm.ps1" -Arguments @{InstallDir = $InstallDir}

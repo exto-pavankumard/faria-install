@@ -99,6 +99,7 @@ Everything needed for document layout detection and table extraction.
 | Leptonica | - | Image library (system install) |
 | MuPDF | - | PDF rendering (system install) |
 | ONNX Runtime | ~50 MB | Model inference engine |
+| CLIP Model | ~100 MB | Visual embedding (Qdrant/clip-ViT-B-32) |
 | DETR Model | ~350 MB | Document layout detection |
 | Nemotron Model | ~200 MB | Table structure detection |
 
@@ -128,6 +129,7 @@ LLM-powered features like cross-page table merging.
 | `--features LIST` | Comma-separated list: `idp`, `chat`, `all` |
 | `--install-dir DIR` | Installation directory (default: `~/.faria`) |
 | `--gpu` | Enable GPU support (CUDA on Linux) |
+| `--system` | System-wide ONNX Runtime install + HF direct model download (no Python required; for Docker/CGO builds) |
 | `--help`, `-h` | Show help message |
 
 **Interactive Mode:** Run without options to be prompted for feature selection.
@@ -149,6 +151,9 @@ LLM-powered features like cross-page table merging.
 
 # IDP with GPU support (Linux only)
 ./install.sh --features idp --gpu
+
+# System-wide install for Docker/CGO (no Python required)
+./install.sh --features idp --system
 
 # Custom directory
 ./install.sh --features all --install-dir /opt/faria
@@ -231,7 +236,8 @@ Verify your installation is complete and working.
 
 ### What Gets Checked
 
-- **ONNX Runtime** - Core inference engine
+- **ONNX Runtime** - Core inference engine (user install or system install)
+- **CLIP Model** - Visual embedding model
 - **DETR Model** - Document layout detection
 - **Nemotron Model** - Table structure detection
 - **IDP Dependencies** - OpenCV, Tesseract, Leptonica, MuPDF
@@ -290,6 +296,7 @@ Remove all Faria-installed files.
 
 - **Environment variables** - Remove from your shell profile:
   - `FARIA_ONNXRUNTIME_PATH`
+  - `FARIA_CLIP_MODEL_PATH`
   - `FARIA_DETR_MODEL_PATH`
   - `FARIA_NEMOTRON_MODEL_PATH`
   - `FARIA_LLAMA_CLI_PATH`
@@ -306,6 +313,7 @@ Add to your shell profile (`~/.bashrc`, `~/.zshrc`, or `~/.profile`):
 ```bash
 # IDP components
 export FARIA_ONNXRUNTIME_PATH="$HOME/.faria/lib/onnxruntime/libonnxruntime.dylib"
+export FARIA_CLIP_MODEL_PATH="$HOME/.faria/models/clip_visual.onnx"
 export FARIA_DETR_MODEL_PATH="$HOME/.faria/models/detr_layout_detection.onnx"
 export FARIA_NEMOTRON_MODEL_PATH="$HOME/.faria/models/nemotron_table_structure.onnx"
 
@@ -315,6 +323,13 @@ export FARIA_SLM_MODEL_PATH="$HOME/.faria/models/qwen2.5-0.5b-instruct-q8_0.gguf
 ```
 
 **Note:** If using the default `~/.faria/` location, environment variables are optional - Faria will auto-detect the paths.
+
+### Installer Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `FARIA_INSTALL_RAW` | Override the base URL used by `curl \| bash` to download sub-scripts (default: `https://raw.githubusercontent.com/exto360-inc/faria-install/main`). Useful for testing forks or private mirrors. |
+| `HF_TOKEN` | HuggingFace authentication token. Required if any model repo is gated. Used automatically by `--system` model download. |
 
 ### Platform-Specific Library Names
 
@@ -338,10 +353,13 @@ After installation:
 │   └── onnxruntime/
 │       └── libonnxruntime.dylib  # ONNX Runtime library
 └── models/
+    ├── clip_visual.onnx                 # Visual embedding (IDP)
     ├── detr_layout_detection.onnx      # Layout detection (IDP)
     ├── nemotron_table_structure.onnx   # Table structure (IDP)
     └── qwen2.5-0.5b-instruct-q8_0.gguf # LLM model (Chat/LLM)
 ```
+
+> **Note:** When `--system` is used, ONNX Runtime is installed to `/usr/local` instead of `~/.faria/lib/onnxruntime/`. Models are still placed in `~/.faria/models/`.
 
 ---
 

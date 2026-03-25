@@ -14,7 +14,7 @@
 
 set -e
 
-# Build date: 2026-01-23T19:47:45Z
+# Build date: 2026-03-26T07:04:28Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 # ============================================================================
@@ -493,34 +493,95 @@ __install_opencv() {
             echo "  Distribution: ${DISTRO}"
             echo ""
     
+            # Distro repos ship OpenCV 4.5/4.6 which causes dependency mismatches.
+            # Build 4.10.0 from source to guarantee a compatible version.
+            OPENCV_BUILD_VERSION="4.10.0"
+    
+            echo -e "${YELLOW}Installing build dependencies...${NC}"
             case "${DISTRO}" in
                 ubuntu|debian|linuxmint|pop)
-                    echo -e "${YELLOW}Installing via apt...${NC}"
                     sudo apt update
-                    sudo apt install -y libopencv-dev
+                    sudo apt install -y build-essential cmake git pkg-config \
+                        libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
+                        libv4l-dev libjpeg-dev libpng-dev libtiff-dev \
+                        libatlas-base-dev python3-dev python3-numpy libtbb-dev
                     ;;
                 fedora|rhel|centos|rocky|almalinux)
-                    echo -e "${YELLOW}Installing via dnf...${NC}"
-                    sudo dnf install -y opencv opencv-devel
+                    sudo dnf install -y gcc gcc-c++ cmake git pkgconfig \
+                        gtk3-devel ffmpeg-devel libv4l-devel \
+                        libjpeg-turbo-devel libpng-devel libtiff-devel \
+                        python3-devel python3-numpy tbb-devel
                     ;;
                 arch|manjaro|endeavouros)
-                    echo -e "${YELLOW}Installing via pacman...${NC}"
-                    sudo pacman -S --noconfirm opencv
+                    sudo pacman -S --noconfirm base-devel cmake git pkgconf \
+                        gtk3 ffmpeg libjpeg-turbo libpng libtiff \
+                        python python-numpy intel-tbb
                     ;;
                 opensuse*)
-                    echo -e "${YELLOW}Installing via zypper...${NC}"
-                    sudo zypper install -y opencv opencv-devel
+                    sudo zypper install -y gcc gcc-c++ cmake git pkg-config \
+                        gtk3-devel ffmpeg-devel libv4l-devel \
+                        libjpeg62-devel libpng16-devel libtiff-devel \
+                        python3-devel python3-numpy tbb-devel
                     ;;
                 *)
                     echo -e "${RED}Unsupported Linux distribution: ${DISTRO}${NC}"
                     echo ""
-                    echo "Please install OpenCV manually:"
-                    echo "  - Ubuntu/Debian: sudo apt install libopencv-dev"
-                    echo "  - Fedora/RHEL: sudo dnf install opencv opencv-devel"
-                    echo "  - Arch: sudo pacman -S opencv"
+                    echo "Please install the build dependencies for your distro manually,"
+                    echo "then re-run this script, or build OpenCV ${OPENCV_BUILD_VERSION} from source:"
+                    echo "  https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz"
                     exit 1
                     ;;
             esac
+    
+            echo ""
+            echo -e "${YELLOW}Downloading OpenCV ${OPENCV_BUILD_VERSION} source...${NC}"
+            BUILD_DIR="$(mktemp -d)"
+            trap "rm -rf '${BUILD_DIR}'" EXIT
+    
+            if command -v curl &> /dev/null; then
+                curl -fL "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz" \
+                    -o "${BUILD_DIR}/opencv.tar.gz"
+            elif command -v wget &> /dev/null; then
+                wget -O "${BUILD_DIR}/opencv.tar.gz" \
+                    "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz"
+            else
+                echo -e "${RED}Error: Neither curl nor wget found. Please install one and retry.${NC}"
+                exit 1
+            fi
+    
+            echo -e "${YELLOW}Building OpenCV ${OPENCV_BUILD_VERSION} (this may take 10-20 minutes)...${NC}"
+            tar -xzf "${BUILD_DIR}/opencv.tar.gz" -C "${BUILD_DIR}"
+            mkdir -p "${BUILD_DIR}/opencv-${OPENCV_BUILD_VERSION}/build"
+            cd "${BUILD_DIR}/opencv-${OPENCV_BUILD_VERSION}/build"
+    
+            cmake .. \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/usr/local \
+                -DOPENCV_GENERATE_PKGCONFIG=ON \
+                -DBUILD_TESTS=OFF \
+                -DBUILD_PERF_TESTS=OFF \
+                -DBUILD_EXAMPLES=OFF
+    
+            if command -v nproc &> /dev/null; then
+                JOBS="$(nproc)"
+            elif command -v getconf &> /dev/null; then
+                JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+            else
+                JOBS=1
+            fi
+            make -j"${JOBS}"
+            sudo make install
+            sudo ldconfig
+    
+            # Persist the pkg-config path so opencv4.pc is always discoverable.
+            # Both lib and lib64 are exported: on Fedora/RHEL-family 64-bit systems
+            # CMake installs opencv4.pc to /usr/local/lib64/pkgconfig instead of lib/.
+            echo 'export PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH' \
+                | sudo tee /etc/profile.d/opencv.sh > /dev/null
+            export PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+    
+            cd - > /dev/null
+            # BUILD_DIR cleanup is handled by the EXIT trap set after mktemp
             ;;
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
@@ -551,8 +612,7 @@ __install_opencv() {
     echo ""
     echo "OpenCV has been installed system-wide."
     echo "No additional configuration is required - Faria will auto-detect it."
-    echo ""
-}
+    echo ""}
 
 # ============================================================================
 # __install_tesseract() - from install-tesseract.sh
@@ -914,6 +974,10 @@ __install_onnxruntime() {
     # Default install directory
     INSTALL_DIR="${HOME}/.faria"
     ENABLE_GPU=false
+    SYSTEM_INSTALL=false
+    
+    # Save original args before parsing so the root-check error can suggest a correct re-run command
+    ORIG_ARGS=("$@")
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -926,6 +990,10 @@ __install_onnxruntime() {
                 ENABLE_GPU=true
                 shift
                 ;;
+            --system)
+                SYSTEM_INSTALL=true
+                shift
+                ;;
             --help|-h)
                 echo "Faria ONNX Runtime Installation Script"
                 echo ""
@@ -934,6 +1002,7 @@ __install_onnxruntime() {
                 echo "Options:"
                 echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
                 echo "  --gpu              Install GPU/CUDA version (Linux/Windows only)"
+                echo "  --system           Install to /usr/local with headers (for Docker/CGO builds)"
                 echo "  --help, -h         Show this help message"
                 echo ""
                 echo "IMPORTANT: This script downloads ONNX Runtime from GitHub releases,"
@@ -960,6 +1029,27 @@ __install_onnxruntime() {
     echo "  OS: ${OS}"
     echo "  Architecture: ${ARCH}"
     echo "  GPU enabled: ${ENABLE_GPU}"
+    
+    # --system is only supported on Linux (requires ldconfig and .so convention)
+    if [ "${SYSTEM_INSTALL}" = true ] && [ "${OS}" != "Linux" ]; then
+        echo -e "${RED}Error: --system is only supported on Linux.${NC}"
+        echo "  Use the default user install on macOS/Windows."
+        exit 1
+    fi
+    
+    # --system writes to /usr/local and runs ldconfig — both require root.
+    # sudo is intentionally NOT used here: --system is designed for Docker/CI
+    # environments where the container already runs as root, and sudo is often
+    # absent in minimal base images. Non-Docker users who pass --system on a
+    # regular Linux host must invoke the script with sudo themselves.
+    # The default (non-system) install path writes only to ~/.faria and never
+    # requires elevated privileges.
+    if [ "${SYSTEM_INSTALL}" = true ] && [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED}Error: --system requires root privileges.${NC}"
+        echo "  Inside Docker this is automatic. On a regular host, re-run as:"
+        echo "    sudo \"$0\" ${ORIG_ARGS[*]}"
+        exit 1
+    fi
     
     # Determine ONNX Runtime release asset name
     case "${OS}" in
@@ -1021,9 +1111,9 @@ __install_onnxruntime() {
     echo "  Asset: ${ONNX_ASSET}"
     echo ""
     
-    # Check if already installed
+    # Check if already installed (skipped in --system mode)
     LIB_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
-    if [ -f "${LIB_PATH}" ]; then
+    if [ "${SYSTEM_INSTALL}" = false ] && [ -f "${LIB_PATH}" ]; then
         echo -e "${YELLOW}ONNX Runtime already installed at: ${LIB_PATH}${NC}"
         read -p "Do you want to reinstall? (y/N): " -n 1 -r
         echo
@@ -1035,7 +1125,9 @@ __install_onnxruntime() {
     
     # Create directories
     echo -e "${YELLOW}Creating directories...${NC}"
-    mkdir -p "${INSTALL_DIR}/lib/onnxruntime"
+    if [ "${SYSTEM_INSTALL}" = false ]; then
+        mkdir -p "${INSTALL_DIR}/lib/onnxruntime"
+    fi
     
     # Download ONNX Runtime
     TEMP_DIR=$(mktemp -d)
@@ -1064,19 +1156,43 @@ __install_onnxruntime() {
         exit 1
     fi
     
-    # Copy library files
-    echo -e "${YELLOW}Installing library files...${NC}"
-    cp -r "${EXTRACTED_DIR}/lib/"* "${INSTALL_DIR}/lib/onnxruntime/"
+    if [ "${SYSTEM_INSTALL}" = true ]; then
+        # System-wide install: lib/ + include/ to /usr/local for CGO builds
+        echo -e "${YELLOW}Installing to /usr/local (system mode)...${NC}"
+        # Copy all libraries preserving symlinks (includes GPU provider shared objects)
+        mkdir -p /usr/local/lib
+        cp -a "${EXTRACTED_DIR}/lib/." /usr/local/lib/
+        # Ensure a stable unversioned symlink for CGO (-lonnxruntime) and verify.sh
+        ln -sf "libonnxruntime.so.${ONNXRUNTIME_VERSION}" /usr/local/lib/libonnxruntime.so
+        # The tarball layout is include/onnxruntime/core/... so copy the inner
+        # onnxruntime/ dir to match CGO_CFLAGS=-I/usr/local/include/onnxruntime
+        if [ -d "${EXTRACTED_DIR}/include/onnxruntime" ]; then
+            mkdir -p /usr/local/include/onnxruntime
+            cp -r "${EXTRACTED_DIR}/include/onnxruntime/"* /usr/local/include/onnxruntime/
+        fi
+        echo -e "${YELLOW}Running ldconfig...${NC}"
+        ldconfig
+    else
+        # User install: lib/ only to ~/.faria/lib/onnxruntime/
+        echo -e "${YELLOW}Installing library files...${NC}"
+        cp -r "${EXTRACTED_DIR}/lib/"* "${INSTALL_DIR}/lib/onnxruntime/"
+    fi
     
     # Verify installation
     echo ""
     echo -e "${YELLOW}Verifying installation...${NC}"
     
-    if [ -f "${LIB_PATH}" ]; then
-        LIB_SIZE=$(du -h "${LIB_PATH}" | cut -f1)
+    if [ "${SYSTEM_INSTALL}" = true ]; then
+        VERIFY_PATH="/usr/local/lib/${LIB_NAME}"
+    else
+        VERIFY_PATH="${LIB_PATH}"
+    fi
+    
+    if [ -f "${VERIFY_PATH}" ]; then
+        LIB_SIZE=$(du -h "${VERIFY_PATH}" | cut -f1)
         echo -e "${GREEN}  ${LIB_NAME}: OK (${LIB_SIZE})${NC}"
     else
-        echo -e "${RED}  ${LIB_NAME}: FAILED${NC}"
+        echo -e "${RED}  ${LIB_NAME}: FAILED (expected at ${VERIFY_PATH})${NC}"
         exit 1
     fi
     
@@ -1086,21 +1202,27 @@ __install_onnxruntime() {
     echo -e "${GREEN}  Installation Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
+    if [ "${SYSTEM_INSTALL}" = true ]; then
+        INSTALLED_LIB_PATH="/usr/local/lib/${LIB_NAME}"
+    else
+        INSTALLED_LIB_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+    fi
+    
     echo "Installed files:"
-    echo "  ${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+    echo "  ${INSTALLED_LIB_PATH}"
     echo ""
     echo -e "${YELLOW}Configuration Options:${NC}"
     echo ""
     echo "Option 1: Environment variable (recommended)"
     echo "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
     echo ""
-    echo "    export FARIA_ONNXRUNTIME_PATH=\"${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}\""
+    echo "    export FARIA_ONNXRUNTIME_PATH=\"${INSTALLED_LIB_PATH}\""
     echo ""
     echo "Option 2: Auto-detection"
     echo "  Faria will automatically detect files in ~/.faria/ (no action needed)"
     echo ""
     echo "Option 3: Manual configuration in code"
-    echo "  config.Runtime.ONNXLibraryPath = \"${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}\""
+    echo "  config.Runtime.ONNXLibraryPath = \"${INSTALLED_LIB_PATH}\""
     echo ""
     
     if [ "${OS}" = "Darwin" ]; then
@@ -1117,23 +1239,34 @@ __install_onnxruntime() {
 __install_models() {
     #
     # Faria ML Models Installation Script
-    # Exports and installs DETR (layout detection) and Nemotron (table structure) models
+    # Downloads and installs CLIP, DETR, and Nemotron ONNX models.
+    #
+    # CLIP     — always downloaded from Qdrant/clip-ViT-B-32-vision (HuggingFace)
+    # DETR     — with --system: downloaded from pavan-synkrato360/faria-models (HF)
+    #            without --system: exported via Python/PyTorch (local dev workflow)
+    # Nemotron — with --system: downloaded from pavan-synkrato360/faria-models (HF)
+    #            without --system: cloned from HuggingFace and exported via Python
     #
     # Usage: ./install-models.sh [OPTIONS]
     #
-    # Prerequisites:
+    # Prerequisites (only required without --system):
     #   - Python 3.8+
-    #   - Git with Git LFS
+    #   - Git with Git LFS (for Nemotron)
     #
     
     
     # Colors for output
     
+    # Check if running in interactive mode (not piped)
+    function _local_is_interactive { [ -t 0 ]; }
+    
     # Default install directory
     INSTALL_DIR="${HOME}/.faria"
+    SKIP_CLIP=false
     SKIP_DETR=false
     SKIP_NEMOTRON=false
     KEEP_VENV=false
+    SYSTEM_INSTALL=false
     
     # Get script directory (where this script is located)
     # The repo root is the parent of scripts/
@@ -1144,6 +1277,10 @@ __install_models() {
             --install-dir)
                 INSTALL_DIR="$2"
                 shift 2
+                ;;
+            --skip-clip)
+                SKIP_CLIP=true
+                shift
                 ;;
             --skip-detr)
                 SKIP_DETR=true
@@ -1157,6 +1294,10 @@ __install_models() {
                 KEEP_VENV=true
                 shift
                 ;;
+            --system)
+                SYSTEM_INSTALL=true
+                shift
+                ;;
             --help|-h)
                 echo "Faria ML Models Installation Script"
                 echo ""
@@ -1164,14 +1305,17 @@ __install_models() {
                 echo ""
                 echo "Options:"
                 echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
+                echo "  --system           Download models directly from HuggingFace (no Python required)"
+                echo "                     Suitable for Docker/CI builds and system-wide installs"
+                echo "  --skip-clip        Skip CLIP visual model download"
                 echo "  --skip-detr        Skip DETR model installation"
                 echo "  --skip-nemotron    Skip Nemotron model installation"
-                echo "  --keep-venv        Keep Python virtual environment after installation"
+                echo "  --keep-venv        Keep Python virtual environment after installation (local only)"
                 echo "  --help, -h         Show this help message"
                 echo ""
                 echo "Prerequisites:"
-                echo "  - Python 3.8+"
-                echo "  - Git with Git LFS (for Nemotron)"
+                echo "  --system mode: curl or wget"
+                echo "  local mode:    Python 3.8+, Git with Git LFS (for Nemotron)"
                 exit 0
                 ;;
             *)
@@ -1191,75 +1335,156 @@ __install_models() {
     
     echo -e "${YELLOW}Detecting system...${NC}"
     echo "  OS: ${OS}"
-    echo "  Repository: ${REPO_DIR}"
+    if [ "${SYSTEM_INSTALL}" = false ]; then
+        echo "  Repository: ${REPO_DIR}"
+    fi
     echo ""
-    
-    # Check prerequisites
-    echo -e "${YELLOW}Checking prerequisites...${NC}"
-    
-    # Check Python (requires 3.12.x for onnxruntime compatibility)
-    __setup_python
-    
-    if [ -z "${PYTHON_CMD}" ]; then
-        echo -e "${RED}Error: Python 3.12 setup failed${NC}"
-        exit 1
-    fi
-    
-    PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | cut -d' ' -f2)
-    
-    # Check Git
-    if ! command -v git &> /dev/null; then
-        echo -e "${RED}Error: Git not found. Please install Git.${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}  Git: $(git --version | cut -d' ' -f3)${NC}"
-    
-    # Check Git LFS (required for Nemotron)
-    if [ "${SKIP_NEMOTRON}" = false ]; then
-        if ! command -v git-lfs &> /dev/null; then
-            echo -e "${RED}Error: Git LFS not found. Please install Git LFS.${NC}"
-            echo ""
-            echo "Installation:"
-            echo "  macOS: brew install git-lfs"
-            echo "  Ubuntu/Debian: sudo apt install git-lfs"
-            echo "  Then run: git lfs install"
-            exit 1
-        fi
-        echo -e "${GREEN}  Git LFS: installed${NC}"
-    fi
     
     echo ""
     echo -e "${YELLOW}Installation configuration:${NC}"
     echo "  Install directory: ${INSTALL_DIR}"
-    echo "  DETR: $([ "${SKIP_DETR}" = true ] && echo "skip" || echo "install")"
+    echo "  Mode:     $([ "${SYSTEM_INSTALL}" = true ] && echo "system (HuggingFace direct download)" || echo "local (Python export)")"
+    echo "  CLIP:     $([ "${SKIP_CLIP}" = true ] && echo "skip" || echo "install")"
+    echo "  DETR:     $([ "${SKIP_DETR}" = true ] && echo "skip" || echo "install")"
     echo "  Nemotron: $([ "${SKIP_NEMOTRON}" = true ] && echo "skip" || echo "install")"
     echo ""
     
-    # Create directories
+    # Create model directory
     mkdir -p "${INSTALL_DIR}/models"
     
-    # Create temp directory for work
-    WORK_DIR=$(mktemp -d)
-    VENV_DIR="${WORK_DIR}/venv"
+    # ============================================================================
+    # Prerequisites check (local mode only)
+    # ============================================================================
+    if [ "${SYSTEM_INSTALL}" = false ]; then
+        echo -e "${YELLOW}Checking prerequisites...${NC}"
     
-    function _local_cleanup {
-        if [ "${KEEP_VENV}" = false ]; then
-            echo -e "${YELLOW}Cleaning up temporary files...${NC}"
-            rm -rf "${WORK_DIR}"
+        # Check Python (requires 3.12.x for onnxruntime compatibility)
+        __setup_python
+    
+        if [ -z "${PYTHON_CMD}" ]; then
+            echo -e "${RED}Error: Python 3.12 setup failed${NC}"
+            exit 1
+        fi
+    
+        PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | cut -d' ' -f2)
+    
+        # Check Git
+        if ! command -v git &> /dev/null; then
+            echo -e "${RED}Error: Git not found. Please install Git.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}  Git: $(git --version | cut -d' ' -f3)${NC}"
+    
+        # Check Git LFS (required for Nemotron in local mode)
+        if [ "${SKIP_NEMOTRON}" = false ]; then
+            if ! command -v git-lfs &> /dev/null; then
+                echo -e "${RED}Error: Git LFS not found. Please install Git LFS.${NC}"
+                echo ""
+                echo "Installation:"
+                echo "  macOS: brew install git-lfs"
+                echo "  Ubuntu/Debian: sudo apt install git-lfs"
+                echo "  Then run: git lfs install"
+                exit 1
+            fi
+            echo -e "${GREEN}  Git LFS: installed${NC}"
+        fi
+    
+        # Create temp directory for work
+        WORK_DIR=$(mktemp -d)
+        VENV_DIR="${WORK_DIR}/venv"
+    
+        function _local_cleanup {
+            if [ "${KEEP_VENV}" = false ]; then
+                echo -e "${YELLOW}Cleaning up temporary files...${NC}"
+                rm -rf "${WORK_DIR}"
+            else
+                echo -e "${YELLOW}Keeping virtual environment at: ${VENV_DIR}${NC}"
+            fi
+        }
+        trap _local_cleanup EXIT
+    
+        # Create virtual environment
+        echo -e "${YELLOW}Creating Python virtual environment...${NC}"
+        $PYTHON_CMD -m venv "${VENV_DIR}"
+        source "${VENV_DIR}/bin/activate"
+    
+        # Upgrade pip
+        echo -e "${YELLOW}Upgrading pip...${NC}"
+        pip install --upgrade pip -q
+    fi
+    
+    # ============================================================================
+    # Helper: download a model from HuggingFace (system mode)
+    # ============================================================================
+    function _local__hf_download {
+        local label="$1"
+        local url="$2"
+        local dest="$3"
+    
+        echo -e "${YELLOW}Downloading ${label} from HuggingFace...${NC}"
+        echo "  URL: ${url}"
+    
+        if command -v curl &> /dev/null; then
+            if [ -n "${HF_TOKEN}" ]; then
+                curl -fSL -H "Authorization: Bearer ${HF_TOKEN}" "${url}" -o "${dest}"
+            else
+                curl -fSL "${url}" -o "${dest}"
+            fi
+        elif command -v wget &> /dev/null; then
+            if [ -n "${HF_TOKEN}" ]; then
+                wget -q --header="Authorization: Bearer ${HF_TOKEN}" "${url}" -O "${dest}"
+            else
+                wget -q "${url}" -O "${dest}"
+            fi
         else
-            echo -e "${YELLOW}Keeping virtual environment at: ${VENV_DIR}${NC}"
+            echo -e "${RED}Error: Neither curl nor wget found.${NC}"
+            exit 1
+        fi
+    
+        if [ -f "${dest}" ]; then
+            local size
+            size=$(du -h "${dest}" | cut -f1)
+            echo -e "${GREEN}  $(basename "${dest}"): OK (${size})${NC}"
+        else
+            echo -e "${RED}  $(basename "${dest}"): FAILED${NC}"
+            exit 1
         fi
     }
-    trap _local_cleanup EXIT
     
-    # Create virtual environment
-    echo -e "${YELLOW}Creating Python virtual environment...${NC}"
-    $PYTHON_CMD -m venv "${VENV_DIR}"
-    source "${VENV_DIR}/bin/activate"
+    # ============================================================================
+    # Download CLIP Visual Model (always direct download — no Python export exists)
+    # ============================================================================
+    if [ "${SKIP_CLIP}" = false ]; then
+        echo ""
+        echo -e "${BLUE}----------------------------------------${NC}"
+        echo -e "${BLUE}  Downloading CLIP Visual Model${NC}"
+        echo -e "${BLUE}----------------------------------------${NC}"
+        echo ""
     
-    # Upgrade pip
-    echo -e "${YELLOW}Upgrading pip...${NC}"
-    pip install --upgrade pip -q
+        CLIP_MODEL_PATH="${INSTALL_DIR}/models/clip_visual.onnx"
+    
+        if [ -f "${CLIP_MODEL_PATH}" ]; then
+            echo -e "${YELLOW}CLIP model already exists at: ${CLIP_MODEL_PATH}${NC}"
+            if is_interactive; then
+                read -p "Do you want to redownload? (y/N): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo -e "${GREEN}Skipping CLIP download.${NC}"
+                    SKIP_CLIP=true
+                fi
+            else
+                echo -e "${YELLOW}Non-interactive mode: skipping redownload.${NC}"
+                SKIP_CLIP=true
+            fi
+        fi
+    
+        if [ "${SKIP_CLIP}" = false ]; then
+            _hf_download \
+                "CLIP model" \
+                "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/main/model.onnx" \
+                "${CLIP_MODEL_PATH}"
+        fi
+    fi
     
     # ============================================================================
     # Install DETR Model
@@ -1276,39 +1501,52 @@ __install_models() {
         # Check if already exists
         if [ -f "${DETR_MODEL_PATH}" ]; then
             echo -e "${YELLOW}DETR model already exists at: ${DETR_MODEL_PATH}${NC}"
-            read -p "Do you want to reinstall? (y/N): " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo -e "${GREEN}Skipping DETR installation.${NC}"
+            if is_interactive; then
+                read -p "Do you want to reinstall? (y/N): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo -e "${GREEN}Skipping DETR installation.${NC}"
+                    SKIP_DETR=true
+                fi
+            else
+                echo -e "${YELLOW}Non-interactive mode: skipping reinstall.${NC}"
                 SKIP_DETR=true
             fi
         fi
     
         if [ "${SKIP_DETR}" = false ]; then
-            echo -e "${YELLOW}Installing DETR dependencies...${NC}"
-            pip install -r "${MODELS_CACHE_DIR}/requirements-detr.txt" -q
-    
-            echo -e "${YELLOW}Exporting DETR model to ONNX...${NC}"
-            echo "  This may take a few minutes on first run (downloading model)..."
-    
-            # Export script is in models/ directory in this repo
-            DETR_EXPORT_SCRIPT="${MODELS_CACHE_DIR}/export_detr_layout_onnx.py"
-    
-            if [ ! -f "${DETR_EXPORT_SCRIPT}" ]; then
-                echo -e "${RED}Error: DETR export script not found at: ${DETR_EXPORT_SCRIPT}${NC}"
-                exit 1
-            fi
-    
-            cd "${WORK_DIR}"
-            python "${DETR_EXPORT_SCRIPT}" --output "${DETR_MODEL_PATH}"
-    
-            if [ -f "${DETR_MODEL_PATH}" ]; then
-                DETR_SIZE=$(du -h "${DETR_MODEL_PATH}" | cut -f1)
-                echo -e "${GREEN}  DETR model installed: ${DETR_MODEL_PATH} (${DETR_SIZE})${NC}"
+            if [ "${SYSTEM_INSTALL}" = true ]; then
+                # System/Docker mode: download pre-built ONNX from HuggingFace
+                _hf_download \
+                    "DETR model" \
+                    "https://huggingface.co/pavan-synkrato360/faria-models/resolve/main/detr_layout_detection.onnx" \
+                    "${DETR_MODEL_PATH}"
             else
-                echo -e "${RED}Error: DETR ONNX file not found after export${NC}"
-                echo "  Expected output: ${DETR_MODEL_PATH}"
-                exit 1
+                # Local dev mode: export from PyTorch using export script
+                echo -e "${YELLOW}Installing DETR dependencies...${NC}"
+                pip install -r "${MODELS_CACHE_DIR}/requirements-detr.txt" -q
+    
+                echo -e "${YELLOW}Exporting DETR model to ONNX...${NC}"
+                echo "  This may take a few minutes on first run (downloading model)..."
+    
+                DETR_EXPORT_SCRIPT="${MODELS_CACHE_DIR}/export_detr_layout_onnx.py"
+    
+                if [ ! -f "${DETR_EXPORT_SCRIPT}" ]; then
+                    echo -e "${RED}Error: DETR export script not found at: ${DETR_EXPORT_SCRIPT}${NC}"
+                    exit 1
+                fi
+    
+                cd "${WORK_DIR}"
+                python "${DETR_EXPORT_SCRIPT}" --output "${DETR_MODEL_PATH}"
+    
+                if [ -f "${DETR_MODEL_PATH}" ]; then
+                    DETR_SIZE=$(du -h "${DETR_MODEL_PATH}" | cut -f1)
+                    echo -e "${GREEN}  DETR model installed: ${DETR_MODEL_PATH} (${DETR_SIZE})${NC}"
+                else
+                    echo -e "${RED}Error: DETR ONNX file not found after export${NC}"
+                    echo "  Expected output: ${DETR_MODEL_PATH}"
+                    exit 1
+                fi
             fi
         fi
     fi
@@ -1328,59 +1566,83 @@ __install_models() {
         # Check if already exists
         if [ -f "${NEMOTRON_MODEL_PATH}" ]; then
             echo -e "${YELLOW}Nemotron model already exists at: ${NEMOTRON_MODEL_PATH}${NC}"
-            read -p "Do you want to reinstall? (y/N): " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo -e "${GREEN}Skipping Nemotron installation.${NC}"
+            if is_interactive; then
+                read -p "Do you want to reinstall? (y/N): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo -e "${GREEN}Skipping Nemotron installation.${NC}"
+                    SKIP_NEMOTRON=true
+                fi
+            else
+                echo -e "${YELLOW}Non-interactive mode: skipping reinstall.${NC}"
                 SKIP_NEMOTRON=true
             fi
         fi
     
         if [ "${SKIP_NEMOTRON}" = false ]; then
-            echo -e "${YELLOW}Cloning Nemotron repository from HuggingFace...${NC}"
-            echo "  This may take a while (downloading ~200MB model)..."
-    
-            NEMOTRON_REPO="${WORK_DIR}/nemotron-table-structure-v1"
-    
-            cd "${WORK_DIR}"
-            git lfs install
-            git clone https://huggingface.co/nvidia/nemotron-table-structure-v1 "${NEMOTRON_REPO}"
-    
-            echo -e "${YELLOW}Installing Nemotron package...${NC}"
-            cd "${NEMOTRON_REPO}"
-            pip install -r "${MODELS_CACHE_DIR}/requirements-nemotron.txt" -q
-            pip install -e . -q
-    
-            echo -e "${YELLOW}Exporting Nemotron model to ONNX...${NC}"
-    
-            # Export script is in models/ directory in this repo
-            NEMOTRON_EXPORT_SCRIPT="${MODELS_CACHE_DIR}/export_nemotron_onnx.py"
-    
-            if [ ! -f "${NEMOTRON_EXPORT_SCRIPT}" ]; then
-                echo -e "${RED}Error: Nemotron export script not found at: ${NEMOTRON_EXPORT_SCRIPT}${NC}"
-                exit 1
-            fi
-    
-            cd "${WORK_DIR}"
-            python "${NEMOTRON_EXPORT_SCRIPT}" --output "${NEMOTRON_MODEL_PATH}"
-    
-            if [ -f "${NEMOTRON_MODEL_PATH}" ]; then
-                NEMOTRON_SIZE=$(du -h "${NEMOTRON_MODEL_PATH}" | cut -f1)
-                echo -e "${GREEN}  Nemotron model installed: ${NEMOTRON_MODEL_PATH} (${NEMOTRON_SIZE})${NC}"
+            if [ "${SYSTEM_INSTALL}" = true ]; then
+                # System/Docker mode: download pre-built ONNX from HuggingFace
+                _hf_download \
+                    "Nemotron model" \
+                    "https://huggingface.co/pavan-synkrato360/faria-models/resolve/main/nemotron_table_structure.onnx" \
+                    "${NEMOTRON_MODEL_PATH}"
             else
-                echo -e "${RED}Error: Nemotron ONNX file not found after export${NC}"
-                echo "  Expected output: ${NEMOTRON_MODEL_PATH}"
-                exit 1
+                # Local dev mode: clone from HuggingFace and export via Python
+                echo -e "${YELLOW}Cloning Nemotron repository from HuggingFace...${NC}"
+                echo "  This may take a while (downloading ~200MB model)..."
+    
+                NEMOTRON_REPO="${WORK_DIR}/nemotron-table-structure-v1"
+    
+                cd "${WORK_DIR}"
+                git lfs install
+                git clone https://huggingface.co/nvidia/nemotron-table-structure-v1 "${NEMOTRON_REPO}"
+    
+                echo -e "${YELLOW}Installing Nemotron package...${NC}"
+                cd "${NEMOTRON_REPO}"
+                pip install -r "${MODELS_CACHE_DIR}/requirements-nemotron.txt" -q
+                pip install -e . -q
+    
+                echo -e "${YELLOW}Exporting Nemotron model to ONNX...${NC}"
+    
+                NEMOTRON_EXPORT_SCRIPT="${MODELS_CACHE_DIR}/export_nemotron_onnx.py"
+    
+                if [ ! -f "${NEMOTRON_EXPORT_SCRIPT}" ]; then
+                    echo -e "${RED}Error: Nemotron export script not found at: ${NEMOTRON_EXPORT_SCRIPT}${NC}"
+                    exit 1
+                fi
+    
+                cd "${WORK_DIR}"
+                python "${NEMOTRON_EXPORT_SCRIPT}" --output "${NEMOTRON_MODEL_PATH}"
+    
+                if [ -f "${NEMOTRON_MODEL_PATH}" ]; then
+                    NEMOTRON_SIZE=$(du -h "${NEMOTRON_MODEL_PATH}" | cut -f1)
+                    echo -e "${GREEN}  Nemotron model installed: ${NEMOTRON_MODEL_PATH} (${NEMOTRON_SIZE})${NC}"
+                else
+                    echo -e "${RED}Error: Nemotron ONNX file not found after export${NC}"
+                    echo "  Expected output: ${NEMOTRON_MODEL_PATH}"
+                    exit 1
+                fi
             fi
         fi
     fi
     
-    # Deactivate virtual environment
-    deactivate
+    # Deactivate virtual environment (local mode only)
+    if [ "${SYSTEM_INSTALL}" = false ] && command -v deactivate &> /dev/null 2>&1; then
+        deactivate
+    fi
     
     # Verify installation
     echo ""
     echo -e "${YELLOW}Verifying installation...${NC}"
+    
+    if [ "${SKIP_CLIP}" = false ] && [ -f "${INSTALL_DIR}/models/clip_visual.onnx" ]; then
+        CLIP_SIZE=$(du -h "${INSTALL_DIR}/models/clip_visual.onnx" | cut -f1)
+        echo -e "${GREEN}  CLIP: OK (${CLIP_SIZE})${NC}"
+    elif [ "${SKIP_CLIP}" = true ]; then
+        echo -e "${YELLOW}  CLIP: skipped${NC}"
+    else
+        echo -e "${RED}  CLIP: FAILED${NC}"
+    fi
     
     if [ "${SKIP_DETR}" = false ] && [ -f "${INSTALL_DIR}/models/detr_layout_detection.onnx" ]; then
         DETR_SIZE=$(du -h "${INSTALL_DIR}/models/detr_layout_detection.onnx" | cut -f1)
@@ -1407,6 +1669,7 @@ __install_models() {
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo "Installed models:"
+    [ -f "${INSTALL_DIR}/models/clip_visual.onnx" ] && echo "  ${INSTALL_DIR}/models/clip_visual.onnx"
     [ -f "${INSTALL_DIR}/models/detr_layout_detection.onnx" ] && echo "  ${INSTALL_DIR}/models/detr_layout_detection.onnx"
     [ -f "${INSTALL_DIR}/models/nemotron_table_structure.onnx" ] && echo "  ${INSTALL_DIR}/models/nemotron_table_structure.onnx"
     echo ""
@@ -1415,6 +1678,7 @@ __install_models() {
     echo "Option 1: Environment variables (recommended)"
     echo "  Add these to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
     echo ""
+    echo "    export FARIA_CLIP_MODEL_PATH=\"${INSTALL_DIR}/models/clip_visual.onnx\""
     echo "    export FARIA_DETR_MODEL_PATH=\"${INSTALL_DIR}/models/detr_layout_detection.onnx\""
     echo "    export FARIA_NEMOTRON_MODEL_PATH=\"${INSTALL_DIR}/models/nemotron_table_structure.onnx\""
     echo ""
@@ -1655,6 +1919,7 @@ __verify_installation() {
     
     # Default install directory
     INSTALL_DIR="${HOME}/.faria"
+    SYSTEM_INSTALL=false
     
     # Get script directory and config path
     CONFIG_FILE="${SCRIPT_DIR}/../versions.json"
@@ -1666,6 +1931,10 @@ __verify_installation() {
                 INSTALL_DIR="$2"
                 shift 2
                 ;;
+            --system)
+                SYSTEM_INSTALL=true
+                shift
+                ;;
             --help|-h)
                 echo "Faria Installation Verification Script"
                 echo ""
@@ -1673,6 +1942,7 @@ __verify_installation() {
                 echo ""
                 echo "Options:"
                 echo "  --install-dir DIR  Check installation in DIR (default: ~/.faria)"
+                echo "  --system           Verify a system-wide install (/usr/local)"
                 echo "  --help, -h         Show this help message"
                 exit 0
                 ;;
@@ -1770,9 +2040,16 @@ __verify_installation() {
     # Check environment variable first
     ONNX_PATH="${FARIA_ONNXRUNTIME_PATH:-}"
     
-    # Check default location
-    if [ -z "${ONNX_PATH}" ] || [ ! -f "${ONNX_PATH}" ]; then
-        ONNX_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+    if [ "${SYSTEM_INSTALL}" = true ]; then
+        # System install: library lands in /usr/local/lib
+        if [ -z "${ONNX_PATH}" ] || [ ! -f "${ONNX_PATH}" ]; then
+            ONNX_PATH="/usr/local/lib/${LIB_NAME}"
+        fi
+    else
+        # User install: library lands in <install-dir>/lib/onnxruntime
+        if [ -z "${ONNX_PATH}" ] || [ ! -f "${ONNX_PATH}" ]; then
+            ONNX_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+        fi
     fi
     
     if [ -f "${ONNX_PATH}" ]; then
@@ -1781,9 +2058,31 @@ __verify_installation() {
         echo "     ${ONNX_PATH}"
     else
         echo -e "  ${CROSS} Not found"
-        echo "     Expected: ${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+        echo "     Expected: ${ONNX_PATH}"
         ALL_REQUIRED_OK=false
         MISSING_COMPONENTS="${MISSING_COMPONENTS}ONNX Runtime, "
+    fi
+    echo ""
+    
+    # ============================================================================
+    # Check CLIP Model
+    # ============================================================================
+    echo -e "${BLUE}CLIP Model (Visual Embedding):${NC}"
+    
+    CLIP_PATH="${FARIA_CLIP_MODEL_PATH:-}"
+    if [ -z "${CLIP_PATH}" ] || [ ! -f "${CLIP_PATH}" ]; then
+        CLIP_PATH="${INSTALL_DIR}/models/clip_visual.onnx"
+    fi
+    
+    if [ -f "${CLIP_PATH}" ]; then
+        MODEL_SIZE=$(du -h "${CLIP_PATH}" | cut -f1)
+        echo -e "  ${CHECK} Found (${MODEL_SIZE})"
+        echo "     ${CLIP_PATH}"
+    else
+        echo -e "  ${CROSS} Not found"
+        echo "     Expected: ${INSTALL_DIR}/models/clip_visual.onnx"
+        ALL_REQUIRED_OK=false
+        MISSING_COMPONENTS="${MISSING_COMPONENTS}CLIP Model, "
     fi
     echo ""
     
@@ -1973,8 +2272,52 @@ __install_idp() {
     INSTALL_DIR="${HOME}/.faria"
     ENABLE_GPU=false
     INSTALL_LLM=false
+    SYSTEM_FLAG=""
     
     # Get script directory
+    
+    # ---------------------------------------------------------------------------
+    # Curl-aware bootstrap — same pattern as install.sh.
+    # install-idp.sh's leaf scripts are siblings (no scripts/ subdir), so
+    # the bootstrap downloads them flat into the temp directory.
+    # ---------------------------------------------------------------------------
+    _REMOTE_BASE="${FARIA_INSTALL_RAW:-https://raw.githubusercontent.com/exto360-inc/faria-install/main}/scripts"
+    _BOOTSTRAP_TMPDIR=""
+    
+    function _local__bootstrap_scripts {
+        if [ ! -f __install_opencv ]; then
+            echo "Bootstrapping: downloading leaf scripts from ${_REMOTE_BASE} ..."
+            _BOOTSTRAP_TMPDIR=$(mktemp -d)
+    
+            # Detect download tool
+            if command -v curl &> /dev/null; then
+                function _local__dl { curl -fsSL "$1" -o "$2"; }
+            elif command -v wget &> /dev/null; then
+                function _local__dl { wget -qO "$2" "$1"; }
+            else
+                echo "Error: neither curl nor wget found. Please install one and retry."
+                exit 1
+            fi
+    
+            # setup-python.sh needed by install-models.sh local mode;
+            # install-slm.sh needed when --with-llm is used
+            for s in install-opencv.sh install-tesseract.sh install-mupdf.sh \
+                      install-onnxruntime.sh install-models.sh install-slm.sh setup-python.sh; do
+                if ! _dl "${_REMOTE_BASE}/${s}" "${_BOOTSTRAP_TMPDIR}/${s}"; then
+                    echo "Error: failed to download ${s} from ${_REMOTE_BASE}"
+                    exit 1
+                fi
+                chmod +x "${_BOOTSTRAP_TMPDIR}/${s}" 2>/dev/null || true
+            done
+        fi
+    }
+    
+    function _local__cleanup_bootstrap {
+        [ -n "${_BOOTSTRAP_TMPDIR}" ] && rm -rf "${_BOOTSTRAP_TMPDIR}"
+    }
+    trap '_cleanup_bootstrap' EXIT
+    
+    _bootstrap_scripts
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -1985,6 +2328,10 @@ __install_idp() {
                 ;;
             --gpu)
                 ENABLE_GPU=true
+                shift
+                ;;
+            --system)
+                SYSTEM_FLAG="--system"
                 shift
                 ;;
             --with-llm)
@@ -1999,6 +2346,7 @@ __install_idp() {
                 echo "Options:"
                 echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
                 echo "  --gpu              Enable GPU support (CUDA on Linux)"
+                echo "  --system           Install ONNX Runtime system-wide (/usr/local) with headers (for Docker/CGO builds)"
                 echo "  --with-llm         Install LLM support for advanced document understanding"
                 echo "  --help, -h         Show this help message"
                 echo ""
@@ -2075,14 +2423,14 @@ __install_idp() {
     if [ "${ENABLE_GPU}" = true ]; then
         GPU_FLAG="--gpu"
     fi
-    run_step "Installing ONNX Runtime" "install-onnxruntime.sh" --install-dir "${INSTALL_DIR}" ${GPU_FLAG}
+    run_step "Installing ONNX Runtime" "install-onnxruntime.sh" --install-dir "${INSTALL_DIR}" ${GPU_FLAG} ${SYSTEM_FLAG}
     
     # Step 5: Install ML Models (DETR + Nemotron)
-    run_step "Installing ML Models" "install-models.sh" --install-dir "${INSTALL_DIR}"
+    run_step "Installing ML Models" "install-models.sh" --install-dir "${INSTALL_DIR}" ${SYSTEM_FLAG}
     
     # Step 6 (optional): Install LLM for IDP
     if [ "${INSTALL_LLM}" = true ]; then
-        run_step "Installing LLM for IDP" "install-idp-llm.sh" --install-dir "${INSTALL_DIR}"
+        run_step "Installing LLM for IDP" "install-slm.sh" --install-dir "${INSTALL_DIR}"
     fi
     
     # Final Summary
@@ -2240,8 +2588,68 @@ __install_chat() {
 INSTALL_DIR="${HOME}/.faria"
 ENABLE_GPU=false
 FEATURES=""  # Empty means prompt, comma-separated list of features
+SYSTEM_FLAG=""
 
 # Get script directory
+
+# ---------------------------------------------------------------------------
+# Curl-aware bootstrap
+# When run via `curl | bash`, BASH_SOURCE[0] is not the repo path so
+# sub-scripts are not found at ${SCRIPT_DIR}/scripts/. Detect this and
+# download them to a temp directory instead.
+#
+# FARIA_INSTALL_RAW must point to the repo root (no /scripts suffix).
+# The bootstrap appends /scripts internally.
+# ---------------------------------------------------------------------------
+_REMOTE_BASE="${FARIA_INSTALL_RAW:-https://raw.githubusercontent.com/exto360-inc/faria-install/main}/scripts"
+_BOOTSTRAP_TMPDIR=""
+
+_bootstrap_scripts() {
+    if [ ! -f __install_idp ]; then
+        echo "Bootstrapping: downloading sub-scripts from ${_REMOTE_BASE} ..."
+        _BOOTSTRAP_TMPDIR=$(mktemp -d)
+        mkdir -p "${_BOOTSTRAP_TMPDIR}/scripts"
+
+        # Detect download tool
+        if command -v curl &> /dev/null; then
+            _dl() { curl -fsSL "$1" -o "$2"; }
+        elif command -v wget &> /dev/null; then
+            _dl() { wget -qO "$2" "$1"; }
+        else
+            echo "Error: neither curl nor wget found. Please install one and retry."
+            exit 1
+        fi
+
+        # Download sub-scripts (setup-python.sh needed by install-models.sh local mode;
+        # install-slm.sh needed when --with-llm is used)
+        for s in install-idp.sh install-opencv.sh install-tesseract.sh \
+                  install-mupdf.sh install-onnxruntime.sh install-models.sh \
+                  install-chat.sh install-slm.sh verify.sh setup-python.sh; do
+            if ! _dl "${_REMOTE_BASE}/${s}" "${_BOOTSTRAP_TMPDIR}/scripts/${s}"; then
+                echo "Error: failed to download ${s} from ${_REMOTE_BASE}"
+                exit 1
+            fi
+            chmod +x "${_BOOTSTRAP_TMPDIR}/scripts/${s}" 2>/dev/null || true
+        done
+
+        # Download versions.json (needed by verify.sh which looks at ../versions.json)
+        _REMOTE_ROOT="${FARIA_INSTALL_RAW:-https://raw.githubusercontent.com/exto360-inc/faria-install/main}"
+        if ! _dl "${_REMOTE_ROOT}/versions.json" "${_BOOTSTRAP_TMPDIR}/versions.json"; then
+            echo "Error: failed to download versions.json from ${_REMOTE_ROOT}"
+            exit 1
+        fi
+
+    fi
+}
+
+# Note: trap replaces any previously-registered EXIT handler. This is intentional —
+# bootstrap cleanup is the only EXIT action needed at this scope.
+_cleanup_bootstrap() {
+    [ -n "${_BOOTSTRAP_TMPDIR}" ] && rm -rf "${_BOOTSTRAP_TMPDIR}"
+}
+trap '_cleanup_bootstrap' EXIT
+
+_bootstrap_scripts
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -2252,6 +2660,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gpu)
             ENABLE_GPU=true
+            shift
+            ;;
+        --system)
+            SYSTEM_FLAG="--system"
             shift
             ;;
         --features)
@@ -2268,6 +2680,7 @@ while [[ $# -gt 0 ]]; do
             echo "                     Available: idp, chat, all"
             echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
             echo "  --gpu              Enable GPU support (CUDA on Linux)"
+            echo "  --system           Install ONNX Runtime system-wide (/usr/local) with headers (for Docker/CGO builds)"
             echo "  --help, -h         Show this help message"
             echo ""
             echo "Features:"
@@ -2332,6 +2745,11 @@ echo ""
 
 # Prompt for features if not specified
 if [ -z "${FEATURES}" ]; then
+    if [ ! -t 0 ]; then
+        echo "Error: --features is required in non-interactive mode."
+        echo "  Example: curl -fsSL ... | bash -s -- --features idp"
+        exit 1
+    fi
     echo -e "${YELLOW}Which features do you want to install?${NC}"
     echo ""
     echo "  1) idp only      - Document processing"
@@ -2385,8 +2803,12 @@ if [ "${INSTALL_IDP}" = true ]; then
     echo "  This enables advanced document understanding capabilities."
     echo "  (Requires additional ~500 MB disk space)"
     echo ""
-    read -p "Install LLM for IDP? (y/N): " -n 1 -r
-    echo
+    if [ -t 0 ]; then
+        read -p "Install LLM for IDP? (y/N): " -n 1 -r
+        echo
+    else
+        REPLY="N"
+    fi
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         INSTALL_IDP_LLM=true
     fi
@@ -2406,8 +2828,12 @@ else
 fi
 echo ""
 
-read -p "Continue with installation? (Y/n): " -n 1 -r
-echo
+if [ -t 0 ]; then
+    read -p "Continue with installation? (Y/n): " -n 1 -r
+    echo
+else
+    REPLY="Y"
+fi
 if [[ $REPLY =~ ^[Nn]$ ]]; then
     echo "Installation cancelled."
     exit 0
@@ -2452,7 +2878,7 @@ if [ "${INSTALL_IDP}" = true ]; then
         LLM_FLAG="--with-llm"
     fi
 
-    if __install_idp --install-dir "${INSTALL_DIR}" ${GPU_FLAG} ${LLM_FLAG}; then
+    if __install_idp --install-dir "${INSTALL_DIR}" ${GPU_FLAG} ${LLM_FLAG} ${SYSTEM_FLAG}; then
         echo -e "${GREEN}✓ IDP Feature installed successfully${NC}"
     else
         echo -e "${RED}✗ IDP Feature installation failed${NC}"
@@ -2491,7 +2917,7 @@ echo -e "${BLUE}  Step ${CURRENT_STEP}/${TOTAL_STEPS}: Verifying Installation${N
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-__verify_installation --install-dir "${INSTALL_DIR}"
+__verify_installation --install-dir "${INSTALL_DIR}" ${SYSTEM_FLAG}
 
 # ============================================================================
 # Final Summary

@@ -69,6 +69,7 @@ cd faria-install
 | Leptonica | - | Image library (system install) |
 | MuPDF | - | PDF rendering (system install) |
 | ONNX Runtime | 50 MB | Model inference engine |
+| CLIP Model | ~100 MB | Visual embedding (Qdrant/clip-ViT-B-32) |
 | DETR Model | 350 MB | Document layout detection |
 | Nemotron Model | 200 MB | Table structure recognition |
 
@@ -87,6 +88,7 @@ cd faria-install
 --features LIST       Comma-separated list of features (idp, chat, all)
 --install-dir PATH    Installation directory (default: ~/.faria)
 --gpu                 Enable CUDA support (Linux only)
+--system              System-wide ONNX install + HF direct model download (Docker/CGO)
 --help                Show help message
 ```
 
@@ -110,6 +112,9 @@ cd faria-install
 # Custom installation directory
 ./install.sh --features all --install-dir /opt/faria
 
+# System-wide install for Docker/CGO builds (no Python required)
+./install.sh --features idp --system
+
 # IDP only (backward compatible)
 ./install.sh --no-llm
 ```
@@ -124,6 +129,7 @@ cd faria-install
 │   └── onnxruntime/
 │       └── libonnxruntime.dylib          # ONNX Runtime library
 └── models/
+    ├── clip_visual.onnx                  # Visual embedding (IDP)
     ├── detr_layout_detection.onnx        # Layout detection (IDP)
     ├── nemotron_table_structure.onnx     # Table structure (IDP)
     └── qwen2.5-0.5b-instruct-q8_0.gguf   # LLM model (Chat)

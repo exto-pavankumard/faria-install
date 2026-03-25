@@ -24,6 +24,10 @@ NC='\033[0m' # No Color
 # Default install directory
 INSTALL_DIR="${HOME}/.faria"
 ENABLE_GPU=false
+SYSTEM_INSTALL=false
+
+# Save original args before parsing so the root-check error can suggest a correct re-run command
+ORIG_ARGS=("$@")
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -36,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             ENABLE_GPU=true
             shift
             ;;
+        --system)
+            SYSTEM_INSTALL=true
+            shift
+            ;;
         --help|-h)
             echo "Faria ONNX Runtime Installation Script"
             echo ""
@@ -44,6 +52,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
             echo "  --gpu              Install GPU/CUDA version (Linux/Windows only)"
+            echo "  --system           Install to /usr/local with headers (for Docker/CGO builds)"
             echo "  --help, -h         Show this help message"
             echo ""
             echo "IMPORTANT: This script downloads ONNX Runtime from GitHub releases,"
@@ -70,6 +79,27 @@ echo -e "${YELLOW}Detecting system...${NC}"
 echo "  OS: ${OS}"
 echo "  Architecture: ${ARCH}"
 echo "  GPU enabled: ${ENABLE_GPU}"
+
+# --system is only supported on Linux (requires ldconfig and .so convention)
+if [ "${SYSTEM_INSTALL}" = true ] && [ "${OS}" != "Linux" ]; then
+    echo -e "${RED}Error: --system is only supported on Linux.${NC}"
+    echo "  Use the default user install on macOS/Windows."
+    exit 1
+fi
+
+# --system writes to /usr/local and runs ldconfig — both require root.
+# sudo is intentionally NOT used here: --system is designed for Docker/CI
+# environments where the container already runs as root, and sudo is often
+# absent in minimal base images. Non-Docker users who pass --system on a
+# regular Linux host must invoke the script with sudo themselves.
+# The default (non-system) install path writes only to ~/.faria and never
+# requires elevated privileges.
+if [ "${SYSTEM_INSTALL}" = true ] && [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}Error: --system requires root privileges.${NC}"
+    echo "  Inside Docker this is automatic. On a regular host, re-run as:"
+    echo "    sudo \"$0\" ${ORIG_ARGS[*]}"
+    exit 1
+fi
 
 # Determine ONNX Runtime release asset name
 case "${OS}" in
@@ -131,9 +161,9 @@ echo "  ONNX Runtime version: ${ONNXRUNTIME_VERSION}"
 echo "  Asset: ${ONNX_ASSET}"
 echo ""
 
-# Check if already installed
+# Check if already installed (skipped in --system mode)
 LIB_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
-if [ -f "${LIB_PATH}" ]; then
+if [ "${SYSTEM_INSTALL}" = false ] && [ -f "${LIB_PATH}" ]; then
     echo -e "${YELLOW}ONNX Runtime already installed at: ${LIB_PATH}${NC}"
     read -p "Do you want to reinstall? (y/N): " -n 1 -r
     echo
@@ -145,7 +175,9 @@ fi
 
 # Create directories
 echo -e "${YELLOW}Creating directories...${NC}"
-mkdir -p "${INSTALL_DIR}/lib/onnxruntime"
+if [ "${SYSTEM_INSTALL}" = false ]; then
+    mkdir -p "${INSTALL_DIR}/lib/onnxruntime"
+fi
 
 # Download ONNX Runtime
 TEMP_DIR=$(mktemp -d)
@@ -174,19 +206,43 @@ if [ -z "${EXTRACTED_DIR}" ]; then
     exit 1
 fi
 
-# Copy library files
-echo -e "${YELLOW}Installing library files...${NC}"
-cp -r "${EXTRACTED_DIR}/lib/"* "${INSTALL_DIR}/lib/onnxruntime/"
+if [ "${SYSTEM_INSTALL}" = true ]; then
+    # System-wide install: lib/ + include/ to /usr/local for CGO builds
+    echo -e "${YELLOW}Installing to /usr/local (system mode)...${NC}"
+    # Copy all libraries preserving symlinks (includes GPU provider shared objects)
+    mkdir -p /usr/local/lib
+    cp -a "${EXTRACTED_DIR}/lib/." /usr/local/lib/
+    # Ensure a stable unversioned symlink for CGO (-lonnxruntime) and verify.sh
+    ln -sf "libonnxruntime.so.${ONNXRUNTIME_VERSION}" /usr/local/lib/libonnxruntime.so
+    # The tarball layout is include/onnxruntime/core/... so copy the inner
+    # onnxruntime/ dir to match CGO_CFLAGS=-I/usr/local/include/onnxruntime
+    if [ -d "${EXTRACTED_DIR}/include/onnxruntime" ]; then
+        mkdir -p /usr/local/include/onnxruntime
+        cp -r "${EXTRACTED_DIR}/include/onnxruntime/"* /usr/local/include/onnxruntime/
+    fi
+    echo -e "${YELLOW}Running ldconfig...${NC}"
+    ldconfig
+else
+    # User install: lib/ only to ~/.faria/lib/onnxruntime/
+    echo -e "${YELLOW}Installing library files...${NC}"
+    cp -r "${EXTRACTED_DIR}/lib/"* "${INSTALL_DIR}/lib/onnxruntime/"
+fi
 
 # Verify installation
 echo ""
 echo -e "${YELLOW}Verifying installation...${NC}"
 
-if [ -f "${LIB_PATH}" ]; then
-    LIB_SIZE=$(du -h "${LIB_PATH}" | cut -f1)
+if [ "${SYSTEM_INSTALL}" = true ]; then
+    VERIFY_PATH="/usr/local/lib/${LIB_NAME}"
+else
+    VERIFY_PATH="${LIB_PATH}"
+fi
+
+if [ -f "${VERIFY_PATH}" ]; then
+    LIB_SIZE=$(du -h "${VERIFY_PATH}" | cut -f1)
     echo -e "${GREEN}  ${LIB_NAME}: OK (${LIB_SIZE})${NC}"
 else
-    echo -e "${RED}  ${LIB_NAME}: FAILED${NC}"
+    echo -e "${RED}  ${LIB_NAME}: FAILED (expected at ${VERIFY_PATH})${NC}"
     exit 1
 fi
 
@@ -196,21 +252,27 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
+if [ "${SYSTEM_INSTALL}" = true ]; then
+    INSTALLED_LIB_PATH="/usr/local/lib/${LIB_NAME}"
+else
+    INSTALLED_LIB_PATH="${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+fi
+
 echo "Installed files:"
-echo "  ${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}"
+echo "  ${INSTALLED_LIB_PATH}"
 echo ""
 echo -e "${YELLOW}Configuration Options:${NC}"
 echo ""
 echo "Option 1: Environment variable (recommended)"
 echo "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
 echo ""
-echo "    export FARIA_ONNXRUNTIME_PATH=\"${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}\""
+echo "    export FARIA_ONNXRUNTIME_PATH=\"${INSTALLED_LIB_PATH}\""
 echo ""
 echo "Option 2: Auto-detection"
 echo "  Faria will automatically detect files in ~/.faria/ (no action needed)"
 echo ""
 echo "Option 3: Manual configuration in code"
-echo "  config.Runtime.ONNXLibraryPath = \"${INSTALL_DIR}/lib/onnxruntime/${LIB_NAME}\""
+echo "  config.Runtime.ONNXLibraryPath = \"${INSTALLED_LIB_PATH}\""
 echo ""
 
 if [ "${OS}" = "Darwin" ]; then
