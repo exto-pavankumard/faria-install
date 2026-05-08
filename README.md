@@ -23,15 +23,18 @@ curl -fsSL https://raw.githubusercontent.com/exto360-inc/faria-install/main/inst
 ### Windows (PowerShell)
 
 ```powershell
-# Download the installer
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/exto360-inc/faria-install/main/install.ps1" -OutFile "install.ps1"
+# One-liner (IDP, interactive)
+irm https://raw.githubusercontent.com/exto360-inc/faria-install/main/dist/install.ps1 | iex
 
-# Basic installation (without LLM)
-.\install.ps1 -NoLLM
+# Or download and run with flags
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/exto360-inc/faria-install/main/dist/install.ps1" -OutFile "install.ps1"
+.\install.ps1 -Features idp
 
-# Full installation (with LLM)
-.\install.ps1 -WithLLM
+# Fast install — skip Python, download pre-built ONNX from HuggingFace
+.\install.ps1 -Features idp -System
 ```
+
+> Open a **new PowerShell session** after installation for PATH and env var changes to take effect.
 
 ### Clone and Install
 
@@ -52,11 +55,11 @@ cd faria-install
 
 ### Supported Architectures
 
-| Platform | Architectures |
-|---|---|
-| macOS | arm64 (Apple Silicon), x86_64 (Intel) |
-| Linux | x86_64, aarch64 |
-| Windows | x64, arm64 |
+| Platform | IDP (CGO) | Chat |
+|---|---|---|
+| macOS | arm64, x86_64 | arm64, x86_64 |
+| Linux | x86_64, aarch64 | x86_64, aarch64 |
+| Windows | **x86_64 only** | x86_64, arm64 |
 
 ## Features
 
@@ -95,11 +98,11 @@ cd faria-install
 ### Windows (PowerShell)
 
 ```
+-Features LIST        Comma-separated list of features (idp, chat, all)
 -InstallDir PATH      Installation directory (default: %USERPROFILE%\.faria)
--GPU                  Enable GPU support (CUDA)
--WithLLM              Install LLM components
--NoLLM                Skip LLM components
--SkipTesseract        Skip Tesseract if already installed
+-GPU                  Enable GPU support (CUDA — requires CUDA Toolkit 11.8+)
+-WithLLM              Install LLM support for IDP without being prompted
+-System               Download pre-built ONNX from HuggingFace (skip Python)
 -Help                 Show help message
 ```
 
@@ -114,26 +117,50 @@ cd faria-install
 
 # System-wide install for Docker/CGO builds (no Python required)
 ./install.sh --features idp --system
+```
 
-# IDP only (backward compatible)
-./install.sh --no-llm
+```powershell
+# Windows: IDP with GPU
+.\install.ps1 -Features idp -GPU
+
+# Windows: fast install (no Python)
+.\install.ps1 -Features idp -System
+
+# Windows: custom directory
+.\install.ps1 -Features all -InstallDir "D:\faria"
 ```
 
 ## Directory Structure
 
+**macOS / Linux** (`~/.faria/`):
+
 ```
 ~/.faria/
 ├── bin/
-│   └── llama-cli                         # LLM inference (Chat feature)
+│   └── llama-cli                          # LLM inference (Chat feature)
 ├── lib/
 │   └── onnxruntime/
-│       └── libonnxruntime.dylib          # ONNX Runtime library
+│       └── libonnxruntime.{dylib,so}      # ONNX Runtime library
 └── models/
-    ├── clip_visual.onnx                  # Visual embedding (IDP)
-    ├── detr_layout_detection.onnx        # Layout detection (IDP)
-    ├── nemotron_table_structure.onnx     # Table structure (IDP)
+    ├── clip_vision.onnx                   # Visual embedding (IDP)
+    ├── detr_layout_detection.onnx         # Layout detection (IDP)
+    ├── nemotron_table_structure.onnx      # Table structure (IDP)
     └── qwen2.5-0.5b-instruct-q8_0.gguf   # LLM model (Chat)
 ```
+
+**Windows** (`%USERPROFILE%\.faria\`):
+
+```
+.faria\
+├── bin\mutool.exe / llama-cli.exe
+├── lib\opencv\       — DLL + headers + opencv4.pc
+├── lib\mupdf\        — static libs + headers + mupdf.pc
+├── lib\onnxruntime\  — onnxruntime.dll
+├── tesseract\        — UB-Mannheim install + tessdata + .pc files
+└── models\           — clip_vision / detr / nemotron / qwen .onnx/.gguf
+```
+
+See [INSTALLATION.md](INSTALLATION.md) for the full Windows directory layout.
 
 ## Verification
 
@@ -169,14 +196,18 @@ func main() {
 ## Uninstallation
 
 ```bash
+# macOS / Linux
 ./scripts/uninstall.sh
 ```
 
-Or manually:
-
-```bash
-rm -rf ~/.faria
+```powershell
+# Windows
+.\scripts\uninstall.ps1
 ```
+
+Or manually remove `~/.faria` (macOS/Linux) or `%USERPROFILE%\.faria` (Windows).
+
+See [INSTALLATION.md](INSTALLATION.md) for env vars and system packages that need manual removal.
 
 ## Documentation
 

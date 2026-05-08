@@ -21,6 +21,7 @@ param(
     [string]$Features = "",
     [switch]$GPU,
     [switch]$WithLLM,
+    [switch]$System,
     [switch]$Help
 )
 
@@ -35,12 +36,13 @@ if ($Help) {
     Write-Host "  -InstallDir DIR    Install to DIR (default: $env:USERPROFILE\.faria)"
     Write-Host "  -GPU               Enable GPU support (CUDA)"
     Write-Host "  -WithLLM           Install LLM support for IDP (advanced document understanding)"
+    Write-Host "  -System            Download pre-exported ONNX models (skip Python export)"
     Write-Host "  -Help              Show this help message"
     Write-Host ""
     Write-Host "Features:"
     Write-Host "  idp   - Intelligent Document Processing (~630 MB)"
     Write-Host "          OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
-    Write-Host "          DETR model, Nemotron model"
+    Write-Host "          DETR model, Nemotron model, CLIP model"
     Write-Host "          Optional: LLM support (~500 MB extra, use -WithLLM)"
     Write-Host ""
     Write-Host "  chat  - Conversational AI (~535 MB)"
@@ -55,10 +57,63 @@ if ($Help) {
     exit 0
 }
 
-# Get script directory
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# ============================================================================
+# Bootstrap: detect iwr | iex pipe and download sub-scripts if needed
+# ============================================================================
 
+$IsBootstrap = [string]::IsNullOrEmpty($PSScriptRoot) -or
+               -not (Test-Path (Join-Path $PSScriptRoot "scripts\install-idp.ps1"))
+
+if ($IsBootstrap) {
+    Write-Host "Detected pipe/bootstrap mode — downloading sub-scripts..." -ForegroundColor Yellow
+
+    $TempDir = Join-Path $env:TEMP "faria-install-$(Get-Random)"
+    New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $TempDir "scripts") | Out-Null
+
+    $Base = if ($env:FARIA_INSTALL_RAW) { $env:FARIA_INSTALL_RAW } else {
+        "https://raw.githubusercontent.com/exto360-inc/faria-install/main"
+    }
+
+    $Scripts = @(
+        "scripts/_common.ps1",
+        "scripts/setup-toolchain.ps1",
+        "scripts/install-idp.ps1",
+        "scripts/install-chat.ps1",
+        "scripts/install-opencv.ps1",
+        "scripts/install-tesseract.ps1",
+        "scripts/install-mupdf.ps1",
+        "scripts/install-onnxruntime.ps1",
+        "scripts/install-models.ps1",
+        "scripts/install-slm.ps1",
+        "scripts/setup-python.ps1",
+        "scripts/verify.ps1"
+    )
+
+    foreach ($s in $Scripts) {
+        $dest = Join-Path $TempDir $s
+        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+        try {
+            Invoke-WebRequest -Uri "$Base/$s" -OutFile $dest -UseBasicParsing
+        } catch {
+            Write-Host "Error: failed to download $s from $Base/$s" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    $ScriptDir = Join-Path $TempDir "scripts"
+
+    Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+        Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+    } | Out-Null
+} else {
+    $ScriptDir = Join-Path $PSScriptRoot "scripts"
+}
+
+# ============================================================================
 # Banner
+# ============================================================================
+
 Write-Host ""
 Write-Host "===============================================================" -ForegroundColor Cyan
 Write-Host "                                                               " -ForegroundColor Cyan
@@ -67,7 +122,6 @@ Write-Host "                                                               " -Fo
 Write-Host "===============================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# System info
 $Arch = [System.Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
 
 Write-Host "System detected: Windows ($Arch)" -ForegroundColor Yellow
@@ -79,7 +133,7 @@ Write-Host "Available features:" -ForegroundColor Blue
 Write-Host ""
 Write-Host "  idp  - Intelligent Document Processing (~630 MB)" -ForegroundColor Green
 Write-Host "         OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
-Write-Host "         DETR model (layout detection), Nemotron model (tables)"
+Write-Host "         DETR model (layout detection), Nemotron model (tables), CLIP model"
 Write-Host ""
 Write-Host "  chat - Conversational AI (~535 MB)" -ForegroundColor Green
 Write-Host "         llama.cpp, Qwen 2.5 model"
@@ -113,14 +167,14 @@ if ($Features -eq "all") {
 }
 
 # Parse features into flags
-$InstallIDP = $false
+$InstallIDP  = $false
 $InstallChat = $false
 
 $FeatureArray = $Features -split ','
 foreach ($feature in $FeatureArray) {
     $feature = $feature.Trim()
     switch ($feature) {
-        "idp" { $InstallIDP = $true }
+        "idp"  { $InstallIDP  = $true }
         "chat" { $InstallChat = $true }
         default {
             if ($feature) {
@@ -130,7 +184,6 @@ foreach ($feature in $FeatureArray) {
     }
 }
 
-# Validate at least one feature selected
 if (-not $InstallIDP -and -not $InstallChat) {
     Write-Host "Error: No valid features selected" -ForegroundColor Red
     exit 1
@@ -155,6 +208,7 @@ Write-Host "Installation summary:" -ForegroundColor Blue
 Write-Host "  - IDP (Document Processing): $(if ($InstallIDP) { 'yes' } else { 'no' })"
 if ($InstallIDP) {
     Write-Host "    - LLM support: $(if ($InstallIDPLLM) { 'yes' } else { 'no' })"
+    Write-Host "    - Model source: $(if ($System) { 'HuggingFace download (-System)' } else { 'local Python export' })"
 }
 Write-Host "  - Chat (Conversational AI): $(if ($InstallChat) { 'yes' } else { 'no' })"
 Write-Host "  - GPU support: $(if ($GPU) { 'yes' } else { 'no' })"
@@ -173,11 +227,10 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 # Track installation status
 $InstallFailed = $false
-$TotalSteps = 0
-$CurrentStep = 0
+$TotalSteps    = 0
+$CurrentStep   = 0
 
-# Calculate total steps
-if ($InstallIDP) { $TotalSteps++ }
+if ($InstallIDP)  { $TotalSteps++ }
 if ($InstallChat) { $TotalSteps++ }
 $TotalSteps++  # Verification
 
@@ -191,12 +244,13 @@ if ($InstallIDP) {
     Write-Host "=================================================================" -ForegroundColor Blue
     Write-Host ""
 
-    $IDPArgs = @{InstallDir = $InstallDir}
-    if ($GPU) { $IDPArgs.GPU = $true }
-    if ($InstallIDPLLM) { $IDPArgs.WithLLM = $true }
+    $IDPArgs = @{ InstallDir = $InstallDir }
+    if ($GPU)          { $IDPArgs.GPU     = $true }
+    if ($InstallIDPLLM){ $IDPArgs.WithLLM = $true }
+    if ($System)       { $IDPArgs.System  = $true }
 
     try {
-        & "$ScriptDir\scripts\install-idp.ps1" @IDPArgs
+        & "$ScriptDir\install-idp.ps1" @IDPArgs
         if ($LASTEXITCODE -ne 0) { throw "IDP installation returned exit code $LASTEXITCODE" }
         Write-Host "[OK] IDP Feature installed successfully" -ForegroundColor Green
     } catch {
@@ -218,7 +272,7 @@ if ($InstallChat) {
     Write-Host ""
 
     try {
-        & "$ScriptDir\scripts\install-chat.ps1" -InstallDir $InstallDir
+        & "$ScriptDir\install-chat.ps1" -InstallDir $InstallDir
         if ($LASTEXITCODE -ne 0) { throw "Chat installation returned exit code $LASTEXITCODE" }
         Write-Host "[OK] Chat Feature installed successfully" -ForegroundColor Green
     } catch {
@@ -238,7 +292,7 @@ Write-Host "  Step $CurrentStep/$TotalSteps`: Verifying Installation" -Foregroun
 Write-Host "=================================================================" -ForegroundColor Blue
 Write-Host ""
 
-& "$ScriptDir\scripts\verify.ps1" -InstallDir $InstallDir
+& "$ScriptDir\verify.ps1" -InstallDir $InstallDir
 
 # ============================================================================
 # Final Summary
@@ -259,7 +313,7 @@ Write-Host ""
 
 Write-Host "Installed features:" -ForegroundColor Yellow
 if ($InstallIDP) {
-    Write-Host "  - IDP - OpenCV, Tesseract, MuPDF, ONNX Runtime, DETR, Nemotron"
+    Write-Host "  - IDP - OpenCV, Tesseract, MuPDF, ONNX Runtime, DETR, Nemotron, CLIP"
 }
 if ($InstallChat) {
     Write-Host "  - Chat - llama.cpp, Qwen 2.5"
@@ -268,8 +322,7 @@ Write-Host ""
 
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "1. Add environment variables to your profile (optional):"
-Write-Host "   See the output above for the exact paths."
+Write-Host "1. Open a new PowerShell session for PATH and env var changes to take effect."
 Write-Host ""
 Write-Host "2. Or use auto-detection (no configuration needed):"
 Write-Host "   Faria will automatically find files in $env:USERPROFILE\.faria\"
