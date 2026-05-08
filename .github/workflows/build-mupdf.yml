@@ -1,0 +1,138 @@
+name: Build MuPDF Dev Tarballs (Windows)
+"on":
+  workflow_dispatch:
+    inputs:
+      mupdf_version:
+        description: MuPDF version to build (e.g. 1.24.9)
+        required: true
+        default: 1.24.9
+jobs:
+  build-windows-x86_64:
+    name: Build MuPDF windows-x86_64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkg-config base-devel
+      - name: Download MuPDF source
+        shell: "msys2 {0}"
+        env:
+          MSYS: "winsymlinks:copy"
+        run: >
+          VER=${{ inputs.mupdf_version }}
+
+          curl -fsSL
+          "https://mupdf.com/downloads/archive/mupdf-${VER}-source.tar.gz" \
+            -o "mupdf-${VER}-source.tar.gz"
+          tar xzf "mupdf-${VER}-source.tar.gz"
+
+          test -d "mupdf-${VER}-source"
+      - name: Build MuPDF
+        shell: "msys2 {0}"
+        run: |
+          VER=${{ inputs.mupdf_version }}
+          cd "mupdf-${VER}-source"
+          make -j$(nproc) \
+            build=release \
+            HAVE_X11=no HAVE_GLFW=no HAVE_GLES2=no HAVE_CURL=no \
+            XCFLAGS="-Wno-incompatible-pointer-types" \
+            libs apps
+      - name: Stage output
+        shell: "msys2 {0}"
+        run: >
+          VER=${{ inputs.mupdf_version }}
+
+          mkdir -p out/lib/pkgconfig out/include/mupdf out/bin
+
+          cp "mupdf-${VER}-source/build/release/libmupdf.a"       out/lib/
+
+          cp "mupdf-${VER}-source/build/release/libmupdf-third.a" out/lib/
+
+          cp "mupdf-${VER}-source/include/mupdf/"*.h              
+          out/include/mupdf/
+
+          cp "mupdf-${VER}-source/build/release/mutool.exe"        out/bin/ ||
+          true
+
+          {
+            echo 'prefix=PLACEHOLDER'
+            echo 'libdir=${prefix}/lib'
+            echo 'includedir=${prefix}/include'
+            echo ''
+            echo 'Name: mupdf'
+            echo "Version: ${VER}"
+            echo 'Libs: -L${libdir} -lmupdf -lmupdf-third'
+            echo 'Cflags: -I${includedir}'
+          } > out/lib/pkgconfig/mupdf.pc
+      - name: Verify static libs
+        shell: "msys2 {0}"
+        run: >
+          test -f out/lib/libmupdf.a       || (echo "libmupdf.a missing"      
+          && exit 1)
+
+          test -f out/lib/libmupdf-third.a || (echo "libmupdf-third.a missing"
+          && exit 1)
+
+          test -f out/include/mupdf/fitz.h || (echo "fitz.h missing"          
+          && exit 1)
+
+          echo "Static lib verification passed."
+      - name: Package zip
+        shell: pwsh
+        run: >
+          $VER = "${{ inputs.mupdf_version }}"
+
+          $ASSET = "mupdf-$VER-windows-dev-x86_64.zip"
+
+          $assetPath = Join-Path $PWD $ASSET
+
+          Push-Location out
+
+          Compress-Archive -Path include, lib, bin -DestinationPath $assetPath
+
+          Pop-Location
+
+          "ASSET=$ASSET" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          -Append
+      - name: Compute checksum
+        shell: bash
+        run: |
+          sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          cat "${{ env.ASSET }}.sha256"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mupdf-windows-x86_64
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+  release:
+    name: Create / Update GitHub Release
+    needs: build-windows-x86_64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: Merge checksums
+        run: |
+          cat artifacts/**/*.sha256 > checksums.txt
+          cat checksums.txt
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "mupdf-${{ inputs.mupdf_version }}"
+          name: "MuPDF ${{ inputs.mupdf_version }} Windows dev tarball"
+          files: |
+            artifacts/**/*.zip
+            checksums.txt

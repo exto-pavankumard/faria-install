@@ -1,0 +1,180 @@
+name: Build OpenCV Pre-built Tarballs
+
+# Triggered manually when OpenCV version bumps or a new platform is needed.
+# NOT triggered on PRs or regular branch builds.
+on:
+  workflow_dispatch:
+    inputs:
+      opencv_version:
+        description: "OpenCV version to build (e.g. 4.12.0)"
+        required: true
+        default: "4.12.0"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            cmake_generator: "Unix Makefiles"
+            make_cmd: make
+            lib_ext: so
+            dll_check: ldd
+
+          - os: macos-14
+            platform: macos-arm64
+            cmake_generator: "Unix Makefiles"
+            make_cmd: make
+            lib_ext: dylib
+            dll_check: otool -L
+
+          - os: windows-2022
+            platform: windows-x86_64
+            cmake_generator: "MinGW Makefiles"
+            make_cmd: mingw32-make
+            lib_ext: dll
+            dll_check: objdump
+
+    name: Build OpenCV ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkg-config
+
+      - name: Download OpenCV source
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/opencv/opencv/archive/refs/tags/${{ inputs.opencv_version }}.tar.gz" \
+            -o opencv-${{ inputs.opencv_version }}.tar.gz
+          tar xzf opencv-${{ inputs.opencv_version }}.tar.gz
+
+      - name: Build OpenCV (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir opencv_build && cd opencv_build
+          cmake ../opencv-${{ inputs.opencv_version }} \
+            -G "${{ matrix.cmake_generator }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=./out \
+            -DOPENCV_GENERATE_PKGCONFIG=ON \
+            -DBUILD_LIST=core,imgproc,imgcodecs \
+            -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON \
+            -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON \
+            -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF \
+            -DBUILD_SHARED_LIBS=ON
+          ${{ matrix.make_cmd }} -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+          ${{ matrix.make_cmd }} install
+
+      - name: Build OpenCV (Windows / MinGW)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          mkdir opencv_build && cd opencv_build
+          cmake ../opencv-${{ inputs.opencv_version }} \
+            -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=./out \
+            -DOPENCV_GENERATE_PKGCONFIG=ON \
+            -DOPENCV_INSTALL_BINARIES_PREFIX="" \
+            -DBUILD_LIST=core,imgproc,imgcodecs \
+            -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON \
+            -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON \
+            -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF \
+            -DBUILD_SHARED_LIBS=ON
+          mingw32-make -j$(nproc)
+          mingw32-make install
+
+      - name: Verify dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path "opencv_build/out/bin" -Filter "libopencv_core*.dll" | Select-Object -First 1
+          if (-not $dll) { throw "libopencv_core*.dll not found in opencv_build/out/bin" }
+          $deps = & objdump -p $dll.FullName | Select-String "DLL Name:"
+          $unexpected = $deps | Where-Object { $_ -notmatch "KERNEL32|msvcrt|libstdc|libgcc|libwinpthread" }
+          if ($unexpected) { throw "Unexpected dependencies: $unexpected" }
+          Write-Host "Dependency check passed." -ForegroundColor Green
+
+      - name: Package zip (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VER=${{ inputs.opencv_version }}
+          PLAT=${{ matrix.platform }}
+          ASSET="opencv-${VER}-${PLAT}.zip"
+          cd opencv_build/out
+          zip -r "../../${ASSET}" include lib bin
+          echo "ASSET=${ASSET}" >> $GITHUB_ENV
+
+      - name: Package zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VER  = "${{ inputs.opencv_version }}"
+          $PLAT = "${{ matrix.platform }}"
+          $ASSET = "opencv-$VER-$PLAT.zip"
+          $assetPath = Join-Path $PWD $ASSET
+          Push-Location opencv_build/out
+          Compress-Archive -Path include, lib, bin -DestinationPath $assetPath
+          Pop-Location
+          "ASSET=$ASSET" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compute checksum
+        shell: bash
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          else
+            shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          fi
+          cat "${{ env.ASSET }}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencv-${{ matrix.platform }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+
+  release:
+    name: Create / Update GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Merge checksums
+        run: |
+          cat artifacts/**/*.sha256 > checksums.txt
+          cat checksums.txt
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "opencv-${{ inputs.opencv_version }}"
+          name: "OpenCV ${{ inputs.opencv_version }} pre-built tarballs"
+          files: |
+            artifacts/**/*.zip
+            checksums.txt

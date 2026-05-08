@@ -4,16 +4,14 @@
 #
 # Usage: .\install-onnxruntime.ps1 [-InstallDir DIR] [-GPU]
 #
-# Default install location: $env:USERPROFILE\.faria\
-#
 
 param(
     [string]$InstallDir = "$env:USERPROFILE\.faria",
     [switch]$GPU,
+    [switch]$Force,
     [switch]$Help
 )
 
-# Configuration
 $OnnxRuntimeVersion = "1.22.0"
 
 if ($Help) {
@@ -24,6 +22,7 @@ if ($Help) {
     Write-Host "Options:"
     Write-Host "  -InstallDir DIR  Install to DIR (default: $env:USERPROFILE\.faria)"
     Write-Host "  -GPU             Install GPU/CUDA version"
+    Write-Host "  -Force           Reinstall even if already present"
     Write-Host "  -Help            Show this help message"
     exit 0
 }
@@ -33,27 +32,37 @@ Write-Host "  Faria ONNX Runtime Installation" -ForegroundColor Blue
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host ""
 
-# Detect architecture
 $Arch = [System.Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
+Write-Host "Architecture: $Arch"
+Write-Host "GPU enabled: $GPU"
+Write-Host ""
 
-Write-Host "Detecting system..." -ForegroundColor Yellow
-Write-Host "  OS: Windows"
-Write-Host "  Architecture: $Arch"
-Write-Host "  GPU enabled: $GPU"
+# ── CUDA pre-check ────────────────────────────────────────────────────────────
+if ($GPU) {
+    $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if (-not $nvidiaSmi) {
+        Write-Host "Error: -GPU requested but nvidia-smi not found." -ForegroundColor Red
+        Write-Host "Install CUDA Toolkit 11.8+ from https://developer.nvidia.com/cuda-downloads"
+        exit 1
+    }
+    $cudaVersion = (& nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | Select-Object -First 1)
+    Write-Host "CUDA driver detected: $cudaVersion" -ForegroundColor Green
+    Write-Host ""
+}
 
-# Determine ONNX Runtime release asset name
+# ── Determine asset name ──────────────────────────────────────────────────────
 switch ($Arch) {
     "AMD64" {
-        if ($GPU) {
-            $OnnxAsset = "onnxruntime-win-x64-gpu-$OnnxRuntimeVersion.zip"
+        $OnnxAsset = if ($GPU) {
+            "onnxruntime-win-x64-gpu-$OnnxRuntimeVersion.zip"
         } else {
-            $OnnxAsset = "onnxruntime-win-x64-$OnnxRuntimeVersion.zip"
+            "onnxruntime-win-x64-$OnnxRuntimeVersion.zip"
         }
         $LibName = "onnxruntime.dll"
     }
     "ARM64" {
         if ($GPU) {
-            Write-Host "Warning: GPU version not available for ARM64 Windows, using CPU version" -ForegroundColor Yellow
+            Write-Host "Warning: GPU not available for ARM64 Windows, using CPU version." -ForegroundColor Yellow
         }
         $OnnxAsset = "onnxruntime-win-arm64-$OnnxRuntimeVersion.zip"
         $LibName = "onnxruntime.dll"
@@ -64,108 +73,98 @@ switch ($Arch) {
     }
 }
 
-$OnnxUrl = "https://github.com/microsoft/onnxruntime/releases/download/v$OnnxRuntimeVersion/$OnnxAsset"
+$OnnxUrl      = "https://github.com/microsoft/onnxruntime/releases/download/v$OnnxRuntimeVersion/$OnnxAsset"
+$OnnxLibDir   = "$InstallDir\lib\onnxruntime"
+$LibPath      = "$OnnxLibDir\$LibName"
 
-Write-Host ""
-Write-Host "Installation configuration:" -ForegroundColor Yellow
-Write-Host "  Install directory: $InstallDir"
-Write-Host "  ONNX Runtime version: $OnnxRuntimeVersion"
-Write-Host "  Asset: $OnnxAsset"
+Write-Host "ONNX Runtime version: $OnnxRuntimeVersion"
+Write-Host "Asset: $OnnxAsset"
+Write-Host "Install directory: $OnnxLibDir"
 Write-Host ""
 
-# Check if already installed
-$LibPath = "$InstallDir\lib\onnxruntime\$LibName"
-if (Test-Path $LibPath) {
-    Write-Host "ONNX Runtime already installed at: $LibPath" -ForegroundColor Yellow
-    $response = Read-Host "Do you want to reinstall? (y/N)"
-    if ($response -ne 'y' -and $response -ne 'Y') {
-        Write-Host "Skipping installation." -ForegroundColor Green
-        exit 0
-    }
+# ── Already installed? ────────────────────────────────────────────────────────
+if ((Test-Path $LibPath) -and -not $Force) {
+    $libSize = [math]::Round((Get-Item $LibPath).Length / 1MB, 1)
+    Write-Host "ONNX Runtime already installed: $LibPath ($libSize MB)" -ForegroundColor Green
+    exit 0
 }
 
-# Create directories
-Write-Host "Creating directories..." -ForegroundColor Yellow
-New-Item -ItemType Directory -Force -Path "$InstallDir\lib\onnxruntime" | Out-Null
-
-# Create temp directory
-$TempDir = Join-Path $env:TEMP "faria-onnx-install-$(Get-Random)"
+New-Item -ItemType Directory -Force -Path $OnnxLibDir | Out-Null
+$TempDir = Join-Path $env:TEMP "faria-onnx-$(Get-Random)"
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 
 try {
-    # Download ONNX Runtime
-    Write-Host ""
+    # ── Download ──────────────────────────────────────────────────────────────
     Write-Host "Downloading ONNX Runtime..." -ForegroundColor Yellow
     Write-Host "  URL: $OnnxUrl"
-
     $OnnxZipPath = Join-Path $TempDir "onnxruntime.zip"
+    Start-BitsDownload -Url $OnnxUrl -Destination $OnnxZipPath -Description "ONNX Runtime $OnnxRuntimeVersion"
+    Write-Host "  Download complete." -ForegroundColor Green
+    Write-Host ""
 
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $OnnxUrl -OutFile $OnnxZipPath -UseBasicParsing
-    $ProgressPreference = 'Continue'
+    # ── Checksum verification ─────────────────────────────────────────────────
+    Write-Host "Verifying checksum..." -ForegroundColor Yellow
+    $ChecksumsUrl  = "https://github.com/microsoft/onnxruntime/releases/download/v$OnnxRuntimeVersion/checksums.txt"
+    $ChecksumsPath = Join-Path $TempDir "checksums.txt"
+    try {
+        Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsPath -UseBasicParsing
+        $checksumLine = Get-Content $ChecksumsPath | Where-Object { $_ -match [regex]::Escape($OnnxAsset) }
+        if ($checksumLine) {
+            $expectedHash = ($checksumLine -split '\s+')[0]
+            Invoke-ChecksumVerify -FilePath $OnnxZipPath -ExpectedHash $expectedHash
+            Write-Host "  Checksum OK." -ForegroundColor Green
+        } else {
+            Write-Host "  Warning: no entry for $OnnxAsset in checksums.txt — skipping verify." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  Warning: checksum file unavailable — skipping verify. ($_)" -ForegroundColor Yellow
+    }
+    Write-Host ""
 
+    # ── Extract ───────────────────────────────────────────────────────────────
     Write-Host "Extracting ONNX Runtime..." -ForegroundColor Yellow
     $OnnxExtractPath = Join-Path $TempDir "onnxruntime"
     Expand-Archive -Path $OnnxZipPath -DestinationPath $OnnxExtractPath -Force
 
-    # Find and copy library files
-    $ExtractedDir = Get-ChildItem -Path $OnnxExtractPath -Directory | Where-Object { $_.Name -like "onnxruntime-*" } | Select-Object -First 1
+    $ExtractedDir = Get-ChildItem -Path $OnnxExtractPath -Directory |
+        Where-Object { $_.Name -like "onnxruntime-*" } | Select-Object -First 1
 
     if (-not $ExtractedDir) {
-        Write-Host "Error: Could not find extracted ONNX Runtime directory" -ForegroundColor Red
+        Write-Host "Error: Could not find extracted ONNX Runtime directory." -ForegroundColor Red
         exit 1
     }
 
-    # Copy library files
-    Write-Host "Installing library files..." -ForegroundColor Yellow
-    Copy-Item -Path "$($ExtractedDir.FullName)\lib\*" -Destination "$InstallDir\lib\onnxruntime\" -Recurse -Force
-
-    # Verify installation
+    Copy-Item -Path "$($ExtractedDir.FullName)\lib\*" -Destination $OnnxLibDir -Recurse -Force
+    Write-Host "  Extracted to: $OnnxLibDir" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Verifying installation..." -ForegroundColor Yellow
 
+    # ── Persist env var ───────────────────────────────────────────────────────
+    Set-UserEnv -Name "FARIA_ONNXRUNTIME_PATH" -Value $LibPath
+    Write-Host "FARIA_ONNXRUNTIME_PATH set to: $LibPath" -ForegroundColor Green
+    Write-Host ""
+
+    # ── Verify ────────────────────────────────────────────────────────────────
+    Write-Host "Verifying installation..." -ForegroundColor Yellow
     if (Test-Path $LibPath) {
-        $LibSize = (Get-Item $LibPath).Length / 1MB
-        Write-Host "  $LibName`: OK ($([math]::Round($LibSize, 1)) MB)" -ForegroundColor Green
+        $libSize = [math]::Round((Get-Item $LibPath).Length / 1MB, 1)
+        Write-Host "  $LibName`: OK ($libSize MB)" -ForegroundColor Green
     } else {
         Write-Host "  $LibName`: FAILED" -ForegroundColor Red
         exit 1
     }
 
-    # Print success message and instructions
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  Installation Complete!" -ForegroundColor Green
+    Write-Host "  ONNX Runtime Installation Complete!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Installed files:"
-    Write-Host "  $InstallDir\lib\onnxruntime\$LibName"
+    Write-Host "Installed: $LibPath"
     Write-Host ""
-    Write-Host "Configuration Options:" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Option 1: Environment variable (recommended)"
-    Write-Host "  Run these commands in PowerShell (or add to your profile):"
-    Write-Host ""
-    Write-Host "    `$env:FARIA_ONNXRUNTIME_PATH = `"$InstallDir\lib\onnxruntime\$LibName`""
-    Write-Host ""
-    Write-Host "  Or set permanently:"
-    Write-Host "    [Environment]::SetEnvironmentVariable('FARIA_ONNXRUNTIME_PATH', '$InstallDir\lib\onnxruntime\$LibName', 'User')"
-    Write-Host ""
-    Write-Host "Option 2: Auto-detection"
-    Write-Host "  Faria will automatically detect files in $env:USERPROFILE\.faria\ (no action needed)"
-    Write-Host ""
-    Write-Host "Option 3: Manual configuration in code"
-    Write-Host "  config.Runtime.ONNXLibraryPath = `"$InstallDir\lib\onnxruntime\$LibName`""
-    Write-Host ""
-
     if ($GPU) {
-        Write-Host "Note: CUDA GPU acceleration is enabled. Ensure CUDA Toolkit is installed." -ForegroundColor Blue
+        Write-Host "Note: CUDA GPU acceleration enabled. Ensure CUDA Toolkit 11.8+ is installed." -ForegroundColor Blue
+        Write-Host ""
     }
-    Write-Host ""
 
 } finally {
-    # Cleanup
-    if (Test-Path $TempDir) {
-        Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

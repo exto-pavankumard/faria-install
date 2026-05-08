@@ -14,7 +14,7 @@
 
 set -e
 
-# Build date: 2026-03-26T07:04:28Z
+# Build date: 2026-05-08T09:21:35Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 # ============================================================================
