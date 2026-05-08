@@ -171,3 +171,59 @@ function Write-WarningBanner {
     Write-Host "========================================" -ForegroundColor Yellow
     Write-Host ""
 }
+
+# ============================================================================
+# ENVIRONMENT HELPERS
+# ============================================================================
+
+# Persist an environment variable to the user registry and apply to current session
+function Set-UserEnv {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Value
+    )
+    [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+    Set-Item -Path "Env:$Name" -Value $Value -ErrorAction SilentlyContinue
+}
+
+# ============================================================================
+# CHECKSUM VERIFICATION
+# ============================================================================
+
+# Verify a file's SHA-256 hash against an expected value (hex string)
+# Throws on mismatch
+function Invoke-ChecksumVerify {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][string]$ExpectedHash,
+        [string]$Algorithm = "SHA256"
+    )
+    $actual = (Get-FileHash -Path $FilePath -Algorithm $Algorithm).Hash.ToLower()
+    $expected = $ExpectedHash.ToLower().Trim()
+    if ($actual -ne $expected) {
+        throw "Checksum mismatch for $FilePath`n  Expected: $expected`n  Actual:   $actual"
+    }
+}
+
+# ============================================================================
+# BITS DOWNLOAD WRAPPER
+# ============================================================================
+
+# Download with BITS (resume-capable) and fall back to Invoke-WebRequest
+function Start-BitsDownload {
+    param(
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [string]$Description = ""
+    )
+    try {
+        $bitsArgs = @{ Source = $Url; Destination = $Destination; Priority = "Foreground" }
+        if ($Description) { $bitsArgs.Description = $Description }
+        Start-BitsTransfer @bitsArgs -ErrorAction Stop
+    } catch {
+        Write-Host "  BITS unavailable, falling back to WebRequest..." -ForegroundColor Yellow
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+        $ProgressPreference = 'Continue'
+    }
+}

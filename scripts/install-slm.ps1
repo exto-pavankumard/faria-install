@@ -80,9 +80,7 @@ try {
 
     $LlamaZipPath = Join-Path $TempDir "llama.zip"
 
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $LlamaUrl -OutFile $LlamaZipPath -UseBasicParsing
-    $ProgressPreference = 'Continue'
+    Start-BitsDownload -Url $LlamaUrl -Destination $LlamaZipPath -Description "llama.cpp $LlamaCppVersion"
 
     Write-Host "Extracting llama.cpp..." -ForegroundColor Yellow
     $LlamaExtractPath = Join-Path $TempDir "llama"
@@ -110,9 +108,7 @@ try {
     if (Test-Path $ModelPath) {
         Write-Host "  Model already exists, skipping download" -ForegroundColor Yellow
     } else {
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $QwenModelUrl -OutFile $ModelPath -UseBasicParsing
-        $ProgressPreference = 'Continue'
+        Start-BitsDownload -Url $QwenModelUrl -Destination $ModelPath -Description "Qwen2.5 0.5B model (~530 MB)"
         Write-Host "  Downloaded: $ModelPath" -ForegroundColor Green
     }
 

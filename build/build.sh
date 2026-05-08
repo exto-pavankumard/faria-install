@@ -288,6 +288,7 @@ convert_ps1_script_to_function() {
         [[ "$line" =~ ^\$ScriptDir ]] && continue
 
         # Transform script calls
+        line=$(echo "$line" | sed 's|\$ScriptDir\\setup-toolchain\.ps1|Invoke-SetupToolchain|g')
         line=$(echo "$line" | sed 's|\$ScriptDir\\install-opencv\.ps1|Invoke-InstallOpenCV|g')
         line=$(echo "$line" | sed 's|\$ScriptDir\\install-tesseract\.ps1|Invoke-InstallTesseract|g')
         line=$(echo "$line" | sed 's|\$ScriptDir\\install-mupdf\.ps1|Invoke-InstallMuPDF|g')
@@ -344,6 +345,7 @@ param(
     [string]$InstallDir = "$env:USERPROFILE\.faria",
     [switch]$GPU,
     [switch]$WithLLM,
+    [switch]$System,
     [switch]$Help
 )
 
@@ -408,6 +410,7 @@ PS_MODELS_HELPER
         # Convert component scripts to functions
         local scripts=(
             "${ROOT_DIR}/scripts/setup-python.ps1:Initialize-Python"
+            "${ROOT_DIR}/scripts/setup-toolchain.ps1:Invoke-SetupToolchain"
             "${ROOT_DIR}/scripts/install-opencv.ps1:Invoke-InstallOpenCV"
             "${ROOT_DIR}/scripts/install-tesseract.ps1:Invoke-InstallTesseract"
             "${ROOT_DIR}/scripts/install-mupdf.ps1:Invoke-InstallMuPDF"
@@ -438,13 +441,14 @@ PS_MODELS_HELPER
 if ($Help) {
     Write-Host "Faria Installation Script"
     Write-Host ""
-    Write-Host "Usage: .\install.ps1 [OPTIONS]"
+    Write-Host "Usage: irm <url> | iex  # or  .\install.ps1 [OPTIONS]"
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -Features LIST    Comma-separated list: idp, chat, all"
     Write-Host "  -InstallDir DIR   Install to DIR (default: $env:USERPROFILE\.faria)"
     Write-Host "  -GPU              Enable GPU support (CUDA)"
     Write-Host "  -WithLLM          Install LLM support for IDP"
+    Write-Host "  -System           Download pre-exported ONNX models (skip Python)"
     Write-Host "  -Help             Show this help message"
     exit 0
 }
@@ -466,7 +470,7 @@ Write-Host "Available features:" -ForegroundColor Blue
 Write-Host ""
 Write-Host "  idp  - Intelligent Document Processing (~630 MB)" -ForegroundColor Green
 Write-Host "         OpenCV, Tesseract, Leptonica, MuPDF, ONNX Runtime,"
-Write-Host "         DETR model (layout detection), Nemotron model (tables)"
+Write-Host "         DETR model (layout detection), Nemotron model (tables), CLIP model"
 Write-Host ""
 Write-Host "  chat - Conversational AI (~535 MB)" -ForegroundColor Green
 Write-Host "         llama.cpp, Qwen 2.5 model"
@@ -535,6 +539,7 @@ Write-Host "Installation summary:" -ForegroundColor Blue
 Write-Host "  - IDP (Document Processing): $(if ($InstallIDP) { 'yes' } else { 'no' })"
 if ($InstallIDP) {
     Write-Host "    - LLM support: $(if ($InstallIDPLLM) { 'yes' } else { 'no' })"
+    Write-Host "    - Model source: $(if ($System) { 'HuggingFace download (-System)' } else { 'local Python export' })"
 }
 Write-Host "  - Chat (Conversational AI): $(if ($InstallChat) { 'yes' } else { 'no' })"
 Write-Host "  - GPU support: $(if ($GPU) { 'yes' } else { 'no' })"
@@ -557,7 +562,7 @@ if ($InstallIDP) {
     Write-Step -Step 1 -Total 3 -Name "Installing IDP Feature"
 
     try {
-        Invoke-InstallIDP -InstallDir $InstallDir -GPU:$GPU -WithLLM:$InstallIDPLLM
+        Invoke-InstallIDP -InstallDir $InstallDir -GPU:$GPU -WithLLM:$InstallIDPLLM -System:$System
         Write-Host "IDP Feature installed successfully" -ForegroundColor Green
     } catch {
         Write-Host "IDP Feature installation failed: $_" -ForegroundColor Red
@@ -591,11 +596,13 @@ Write-SuccessBanner -Text "Installation Complete!"
 
 Write-Host "Installed features:" -ForegroundColor Yellow
 if ($InstallIDP) {
-    Write-Host "  - IDP - OpenCV, Tesseract, MuPDF, ONNX Runtime, DETR, Nemotron"
+    Write-Host "  - IDP - OpenCV, Tesseract, MuPDF, ONNX Runtime, DETR, Nemotron, CLIP"
 }
 if ($InstallChat) {
     Write-Host "  - Chat - llama.cpp, Qwen 2.5"
 }
+Write-Host ""
+Write-Host "Open a new PowerShell session for PATH and env var changes to take effect." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "For more information, see: https://github.com/exto360-inc/faria"
 Write-Host ""

@@ -1,14 +1,14 @@
 #
 # Faria MuPDF Installation Script for Windows
-# Installs MuPDF for PDF processing
+# Downloads pre-built MuPDF dev tarball (MinGW static libs + headers) and
+# registers pkg-config
 #
-# Usage: .\install-mupdf.ps1 [OPTIONS]
-#
-# This script downloads pre-built MuPDF binaries or uses Chocolatey.
+# Usage: .\install-mupdf.ps1 [-InstallDir DIR]
 #
 
 param(
     [string]$InstallDir = "$env:USERPROFILE\.faria",
+    [switch]$Force,
     [switch]$Help
 )
 
@@ -19,196 +19,139 @@ if ($Help) {
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -InstallDir DIR  Install to DIR (default: $env:USERPROFILE\.faria)"
+    Write-Host "  -Force           Reinstall even if already present"
     Write-Host "  -Help            Show this help message"
-    Write-Host ""
-    Write-Host "This script installs MuPDF using pre-built binaries or Chocolatey."
     exit 0
 }
+
+$MuPDFVersion  = "1.24.9"
+$MuPDFDir      = "$InstallDir\lib\mupdf"
+$BinDir        = "$InstallDir\bin"
+$PkgConfigDir  = "C:\msys64\mingw64\lib\pkgconfig"
+
+$MuPDFAsset    = "mupdf-$MuPDFVersion-windows-dev-x86_64.zip"
+$MuPDFUrl      = "https://github.com/exto360-inc/faria-install/releases/download/mupdf-$MuPDFVersion/$MuPDFAsset"
+$ChecksumsUrl  = "https://github.com/exto360-inc/faria-install/releases/download/mupdf-$MuPDFVersion/checksums.txt"
 
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host "  Faria MuPDF Installation" -ForegroundColor Blue
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host ""
 
-# MuPDF version
-$MuPDFVersion = "1.24.9"
-$BinDir = "$InstallDir\bin"
-
-# Detect architecture
 $Arch = [System.Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
-Write-Host "Detecting system..." -ForegroundColor Yellow
-Write-Host "  Architecture: $Arch"
+Write-Host "Architecture: $Arch"
+Write-Host "Install directory: $MuPDFDir"
 Write-Host ""
 
-# Check if MuPDF is already installed
-$MuToolCmd = Get-Command mutool -ErrorAction SilentlyContinue
-$MuToolPath = "$BinDir\mutool.exe"
-
-if ($MuToolCmd) {
-    $MuToolVersion = (& mutool -v 2>&1 | Select-Object -First 1)
-    Write-Host "MuPDF is already installed:" -ForegroundColor Green
-    Write-Host "  Version: $MuToolVersion"
-    Write-Host "  Path: $($MuToolCmd.Source)"
-    Write-Host ""
-    $response = Read-Host "Do you want to reinstall? (y/N)"
-    if ($response -ne 'y' -and $response -ne 'Y') {
-        Write-Host "Skipping installation." -ForegroundColor Green
-        exit 0
-    }
-} elseif (Test-Path $MuToolPath) {
-    Write-Host "MuPDF is already installed:" -ForegroundColor Green
-    Write-Host "  Path: $MuToolPath"
-    Write-Host ""
-    $response = Read-Host "Do you want to reinstall? (y/N)"
-    if ($response -ne 'y' -and $response -ne 'Y') {
-        Write-Host "Skipping installation." -ForegroundColor Green
-        exit 0
-    }
+if ($Arch -ne "AMD64") {
+    Write-Host "Error: Only x86_64 (AMD64) Windows is supported for MuPDF CGO builds." -ForegroundColor Red
+    exit 1
 }
 
-# Create directories
-New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-
-# Try to install via Chocolatey first (if available)
-$ChocoCmd = Get-Command choco -ErrorAction SilentlyContinue
-if ($ChocoCmd) {
-    Write-Host "Chocolatey detected. Installing MuPDF via Chocolatey..." -ForegroundColor Yellow
-    Write-Host ""
-
-    try {
-        choco install mupdf -y
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host ""
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host "  Installation Complete!" -ForegroundColor Green
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host ""
-            Write-Host "MuPDF has been installed via Chocolatey."
-            Write-Host "The mutool command should now be available in PATH."
-            Write-Host ""
-            exit 0
-        }
-    } catch {
-        Write-Host "Chocolatey installation failed, falling back to manual download..." -ForegroundColor Yellow
-    }
+# ── Already installed? ────────────────────────────────────────────────────────
+$libPath = "$MuPDFDir\lib\libmupdf.a"
+if ((Test-Path $libPath) -and -not $Force) {
+    Write-Host "MuPDF $MuPDFVersion already installed at $MuPDFDir" -ForegroundColor Green
+    exit 0
 }
 
-# Determine download URL based on architecture
-if ($Arch -eq "ARM64") {
-    # ARM64 builds might not be available, try x64
-    Write-Host "Note: ARM64 builds may not be available, using x64 version..." -ForegroundColor Yellow
-    $MuPDFAsset = "mupdf-$MuPDFVersion-windows.zip"
-} else {
-    $MuPDFAsset = "mupdf-$MuPDFVersion-windows.zip"
-}
-
-# MuPDF official download URL
-$MuPDFUrl = "https://mupdf.com/downloads/archive/$MuPDFAsset"
-$DownloadPath = "$env:TEMP\$MuPDFAsset"
-
-Write-Host "Downloading MuPDF $MuPDFVersion..." -ForegroundColor Yellow
-Write-Host "  From: $MuPDFUrl"
-Write-Host ""
+New-Item -ItemType Directory -Force -Path $MuPDFDir | Out-Null
+New-Item -ItemType Directory -Force -Path $BinDir   | Out-Null
+$TempDir = Join-Path $env:TEMP "faria-mupdf-$(Get-Random)"
+New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 
 try {
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $MuPDFUrl -OutFile $DownloadPath -UseBasicParsing
-    $ProgressPreference = 'Continue'
+    # ── Download tarball ──────────────────────────────────────────────────────
+    Write-Host "Downloading MuPDF $MuPDFVersion dev tarball..." -ForegroundColor Yellow
+    Write-Host "  URL: $MuPDFUrl"
+    $ZipPath = Join-Path $TempDir $MuPDFAsset
+    Start-BitsDownload -Url $MuPDFUrl -Destination $ZipPath -Description "MuPDF $MuPDFVersion"
     Write-Host "  Download complete." -ForegroundColor Green
     Write-Host ""
-} catch {
-    Write-Host "  Download failed: $_" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Please download MuPDF manually from:" -ForegroundColor Yellow
-    Write-Host "  https://mupdf.com/downloads/index.html"
-    Write-Host ""
-    Write-Host "Or install via Chocolatey:" -ForegroundColor Yellow
-    Write-Host "  choco install mupdf"
-    Write-Host ""
-    exit 1
-}
 
-# Extract the archive
-Write-Host "Extracting MuPDF..." -ForegroundColor Yellow
-
-try {
-    $ExtractDir = "$env:TEMP\mupdf-extract"
-    if (Test-Path $ExtractDir) {
-        Remove-Item -Recurse -Force $ExtractDir
-    }
-
-    Expand-Archive -Path $DownloadPath -DestinationPath $ExtractDir -Force
-
-    # Find the extracted folder
-    $ExtractedFolder = Get-ChildItem -Path $ExtractDir -Directory | Select-Object -First 1
-
-    if ($ExtractedFolder) {
-        # Copy mutool.exe to bin directory
-        $MuToolSource = Get-ChildItem -Path $ExtractedFolder.FullName -Recurse -Filter "mutool.exe" | Select-Object -First 1
-        if ($MuToolSource) {
-            Copy-Item -Path $MuToolSource.FullName -Destination $MuToolPath -Force
-            Write-Host "  Installed mutool.exe to: $MuToolPath" -ForegroundColor Green
-        } else {
-            throw "Could not find mutool.exe in extracted archive"
-        }
-
-        # Also copy mudraw if available
-        $MuDrawSource = Get-ChildItem -Path $ExtractedFolder.FullName -Recurse -Filter "mudraw.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($MuDrawSource) {
-            Copy-Item -Path $MuDrawSource.FullName -Destination "$BinDir\mudraw.exe" -Force
-        }
-
-        # Copy mupdf-gl if available (GUI viewer)
-        $MuPDFGLSource = Get-ChildItem -Path $ExtractedFolder.FullName -Recurse -Filter "mupdf-gl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($MuPDFGLSource) {
-            Copy-Item -Path $MuPDFGLSource.FullName -Destination "$BinDir\mupdf-gl.exe" -Force
-        }
+    # ── Checksum verification ─────────────────────────────────────────────────
+    Write-Host "Verifying checksum..." -ForegroundColor Yellow
+    $ChecksumsPath = Join-Path $TempDir "checksums.txt"
+    Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsPath -UseBasicParsing
+    $checksumLine = Get-Content $ChecksumsPath | Where-Object { $_ -match [regex]::Escape($MuPDFAsset) }
+    if ($checksumLine) {
+        $expectedHash = ($checksumLine -split '\s+')[0]
+        Invoke-ChecksumVerify -FilePath $ZipPath -ExpectedHash $expectedHash
+        Write-Host "  Checksum OK." -ForegroundColor Green
     } else {
-        throw "Could not find extracted MuPDF folder"
+        Write-Host "  Warning: no checksum entry found for $MuPDFAsset — skipping verify." -ForegroundColor Yellow
+    }
+    Write-Host ""
+
+    # ── Extract ───────────────────────────────────────────────────────────────
+    Write-Host "Extracting MuPDF..." -ForegroundColor Yellow
+    $ExtractDir = Join-Path $TempDir "mupdf-extract"
+    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
+
+    if (Test-Path $MuPDFDir) { Remove-Item -Recurse -Force $MuPDFDir }
+    $inner = Get-ChildItem -Path $ExtractDir -Directory | Select-Object -First 1
+    if ($inner) {
+        Move-Item -Path $inner.FullName -Destination $MuPDFDir -Force
+    } else {
+        Move-Item -Path $ExtractDir -Destination $MuPDFDir -Force
+    }
+    Write-Host "  Extracted to: $MuPDFDir" -ForegroundColor Green
+
+    # Copy mutool.exe to bin/
+    $mutoolSrc = "$MuPDFDir\bin\mutool.exe"
+    if (Test-Path $mutoolSrc) {
+        Copy-Item $mutoolSrc "$BinDir\mutool.exe" -Force
+        Write-Host "  mutool.exe copied to $BinDir" -ForegroundColor Green
+    }
+    Write-Host ""
+
+    # ── Register pkg-config ───────────────────────────────────────────────────
+    $PcSrc = "$MuPDFDir\lib\pkgconfig\mupdf.pc"
+    if (Test-Path $PcSrc) {
+        Write-Host "Registering mupdf.pc with pkg-config..." -ForegroundColor Yellow
+        New-Item -ItemType Directory -Force -Path $PkgConfigDir | Out-Null
+        $PcDest = "$PkgConfigDir\mupdf.pc"
+        Copy-Item $PcSrc $PcDest -Force
+        $prefix = ($MuPDFDir -replace '\\', '/').TrimEnd('/')
+        (Get-Content $PcDest) -replace 'prefix=.*', "prefix=$prefix" |
+            Set-Content $PcDest
+        Write-Host "  mupdf.pc registered." -ForegroundColor Green
+        Write-Host ""
+    } else {
+        Write-Host "Warning: $PcSrc not found — pkg-config not registered." -ForegroundColor Yellow
     }
 
-    # Cleanup
-    Remove-Item -Path $DownloadPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $ExtractDir -ErrorAction SilentlyContinue
-
-} catch {
-    Write-Host "  Extraction failed: $_" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Please extract manually and copy mutool.exe to:" -ForegroundColor Yellow
-    Write-Host "  $BinDir"
-    Write-Host ""
-    exit 1
-}
-
-# Verify installation
-Write-Host ""
-Write-Host "Verifying installation..." -ForegroundColor Yellow
-
-if (Test-Path $MuToolPath) {
-    # Try to get version
-    try {
-        $Version = (& $MuToolPath -v 2>&1 | Select-Object -First 1)
-        Write-Host "  MuPDF: OK" -ForegroundColor Green
-        Write-Host "    Version: $Version"
-        Write-Host "    Path: $MuToolPath"
-    } catch {
-        Write-Host "  MuPDF: OK (installed)" -ForegroundColor Green
-        Write-Host "    Path: $MuToolPath"
+    # ── Verify ────────────────────────────────────────────────────────────────
+    Write-Host "Verifying installation..." -ForegroundColor Yellow
+    if (Test-Path "$MuPDFDir\lib\libmupdf.a") {
+        Write-Host "  libmupdf.a: OK" -ForegroundColor Green
+    } else {
+        Write-Host "  libmupdf.a: NOT FOUND" -ForegroundColor Red
     }
-} else {
-    Write-Host "  MuPDF: Could not verify installation" -ForegroundColor Yellow
-}
+    if (Test-Path "$MuPDFDir\lib\libmupdf-third.a") {
+        Write-Host "  libmupdf-third.a: OK" -ForegroundColor Green
+    } else {
+        Write-Host "  libmupdf-third.a: NOT FOUND" -ForegroundColor Yellow
+    }
 
-# Print success message
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Installation Complete!" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Green
-Write-Host ""
-Write-Host "MuPDF has been installed to: $BinDir"
-Write-Host ""
-Write-Host "To use MuPDF commands globally, add to your PATH:" -ForegroundColor Yellow
-Write-Host "  `$env:PATH += `";$BinDir`""
-Write-Host ""
-Write-Host "Or Faria will automatically detect it in: $InstallDir"
-Write-Host ""
+    $pkgTest = Get-Command pkg-config -ErrorAction SilentlyContinue
+    if ($pkgTest) {
+        & pkg-config --exists mupdf 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  pkg-config --exists mupdf: OK" -ForegroundColor Green
+        } else {
+            Write-Host "  pkg-config --exists mupdf: FAILED (may need new shell session)" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "  MuPDF Installation Complete!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Installed to: $MuPDFDir"
+    Write-Host ""
+
+} finally {
+    Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
