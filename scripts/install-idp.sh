@@ -25,9 +25,54 @@ NC='\033[0m' # No Color
 INSTALL_DIR="${HOME}/.faria"
 ENABLE_GPU=false
 INSTALL_LLM=false
+SYSTEM_FLAG=""
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Curl-aware bootstrap — same pattern as install.sh.
+# install-idp.sh's leaf scripts are siblings (no scripts/ subdir), so
+# the bootstrap downloads them flat into the temp directory.
+# ---------------------------------------------------------------------------
+_REMOTE_BASE="${FARIA_INSTALL_RAW:-https://raw.githubusercontent.com/exto360-inc/faria-install/main}/scripts"
+_BOOTSTRAP_TMPDIR=""
+
+_bootstrap_scripts() {
+    if [ ! -f "${SCRIPT_DIR}/install-opencv.sh" ]; then
+        echo "Bootstrapping: downloading leaf scripts from ${_REMOTE_BASE} ..."
+        _BOOTSTRAP_TMPDIR=$(mktemp -d)
+
+        # Detect download tool
+        if command -v curl &> /dev/null; then
+            _dl() { curl -fsSL "$1" -o "$2"; }
+        elif command -v wget &> /dev/null; then
+            _dl() { wget -qO "$2" "$1"; }
+        else
+            echo "Error: neither curl nor wget found. Please install one and retry."
+            exit 1
+        fi
+
+        # setup-python.sh needed by install-models.sh local mode;
+        # install-slm.sh needed when --with-llm is used
+        for s in install-opencv.sh install-tesseract.sh install-mupdf.sh \
+                  install-onnxruntime.sh install-models.sh install-slm.sh setup-python.sh; do
+            if ! _dl "${_REMOTE_BASE}/${s}" "${_BOOTSTRAP_TMPDIR}/${s}"; then
+                echo "Error: failed to download ${s} from ${_REMOTE_BASE}"
+                exit 1
+            fi
+            chmod +x "${_BOOTSTRAP_TMPDIR}/${s}" 2>/dev/null || true
+        done
+        SCRIPT_DIR="${_BOOTSTRAP_TMPDIR}"
+    fi
+}
+
+_cleanup_bootstrap() {
+    [ -n "${_BOOTSTRAP_TMPDIR}" ] && rm -rf "${_BOOTSTRAP_TMPDIR}"
+}
+trap '_cleanup_bootstrap' EXIT
+
+_bootstrap_scripts
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -38,6 +83,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gpu)
             ENABLE_GPU=true
+            shift
+            ;;
+        --system)
+            SYSTEM_FLAG="--system"
             shift
             ;;
         --with-llm)
@@ -52,6 +101,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
             echo "  --gpu              Enable GPU support (CUDA on Linux)"
+            echo "  --system           Install ONNX Runtime system-wide (/usr/local) with headers (for Docker/CGO builds)"
             echo "  --with-llm         Install LLM support for advanced document understanding"
             echo "  --help, -h         Show this help message"
             echo ""
@@ -128,14 +178,14 @@ GPU_FLAG=""
 if [ "${ENABLE_GPU}" = true ]; then
     GPU_FLAG="--gpu"
 fi
-run_step "Installing ONNX Runtime" "install-onnxruntime.sh" --install-dir "${INSTALL_DIR}" ${GPU_FLAG}
+run_step "Installing ONNX Runtime" "install-onnxruntime.sh" --install-dir "${INSTALL_DIR}" ${GPU_FLAG} ${SYSTEM_FLAG}
 
 # Step 5: Install ML Models (DETR + Nemotron)
-run_step "Installing ML Models" "install-models.sh" --install-dir "${INSTALL_DIR}"
+run_step "Installing ML Models" "install-models.sh" --install-dir "${INSTALL_DIR}" ${SYSTEM_FLAG}
 
 # Step 6 (optional): Install LLM for IDP
 if [ "${INSTALL_LLM}" = true ]; then
-    run_step "Installing LLM for IDP" "install-idp-llm.sh" --install-dir "${INSTALL_DIR}"
+    run_step "Installing LLM for IDP" "install-slm.sh" --install-dir "${INSTALL_DIR}"
 fi
 
 # Final Summary
