@@ -113,8 +113,12 @@ try {
         $PcDest = "$PkgConfigDir\mupdf.pc"
         Copy-Item $PcSrc $PcDest -Force
         $prefix = ($MuPDFDir -replace '\\', '/').TrimEnd('/')
-        (Get-Content $PcDest) -replace 'prefix=.*', "prefix=$prefix" |
-            Set-Content $PcDest
+        $PcContent = (Get-Content $PcDest) -replace 'prefix=.*', "prefix=$prefix"
+        # pkgconf v2+ requires a Description field; inject it if the tarball omitted it
+        if (-not ($PcContent | Where-Object { $_ -match '^Description:' })) {
+            $PcContent = @("Description: MuPDF static library for CGO PDF processing") + $PcContent
+        }
+        $PcContent | Set-Content $PcDest
         Write-Host "  mupdf.pc registered." -ForegroundColor Green
         Write-Host ""
     } else {

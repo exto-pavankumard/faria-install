@@ -67,6 +67,7 @@ jobs:
             echo 'includedir=${prefix}/include'
             echo ''
             echo 'Name: mupdf'
+            echo 'Description: MuPDF static library for CGO PDF processing'
             echo "Version: ${VER}"
             echo 'Libs: -L${libdir} -lmupdf -lmupdf-third'
             echo 'Cflags: -I${includedir}'
