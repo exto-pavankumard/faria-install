@@ -135,7 +135,12 @@ try {
         exit 1
     }
 
-    # Print success message and instructions
+    # Persist env vars to User registry (consistent with IDP install behaviour)
+    Set-UserEnv -Name "FARIA_LLAMA_CLI_PATH" -Value "$InstallDir\bin\llama-cli.exe"
+    Set-UserEnv -Name "FARIA_SLM_MODEL_PATH"  -Value "$InstallDir\models\$QwenModel"
+    Write-Host "FARIA_LLAMA_CLI_PATH set to: $InstallDir\bin\llama-cli.exe" -ForegroundColor Green
+    Write-Host "FARIA_SLM_MODEL_PATH  set to: $InstallDir\models\$QwenModel" -ForegroundColor Green
+
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
     Write-Host "  Installation Complete!" -ForegroundColor Green
@@ -145,22 +150,13 @@ try {
     Write-Host "  $InstallDir\bin\llama-cli.exe"
     Write-Host "  $InstallDir\models\$QwenModel"
     Write-Host ""
-    Write-Host "Configuration Options:" -ForegroundColor Yellow
+    Write-Host "Environment variables set (User registry):"
+    Write-Host "  FARIA_LLAMA_CLI_PATH = $InstallDir\bin\llama-cli.exe"
+    Write-Host "  FARIA_SLM_MODEL_PATH  = $InstallDir\models\$QwenModel"
     Write-Host ""
-    Write-Host "Option 1: Environment variables (recommended)"
-    Write-Host "  Run these commands in PowerShell (or add to your profile):"
+    Write-Host "Open a new PowerShell session for the changes to take effect." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "    `$env:FARIA_LLAMA_CLI_PATH = `"$InstallDir\bin\llama-cli.exe`""
-    Write-Host "    `$env:FARIA_SLM_MODEL_PATH = `"$InstallDir\models\$QwenModel`""
-    Write-Host ""
-    Write-Host "  Or set them permanently:"
-    Write-Host "    [Environment]::SetEnvironmentVariable('FARIA_LLAMA_CLI_PATH', '$InstallDir\bin\llama-cli.exe', 'User')"
-    Write-Host "    [Environment]::SetEnvironmentVariable('FARIA_SLM_MODEL_PATH', '$InstallDir\models\$QwenModel', 'User')"
-    Write-Host ""
-    Write-Host "Option 2: Auto-detection"
-    Write-Host "  Faria will automatically detect files in $env:USERPROFILE\.faria\ (no action needed)"
-    Write-Host ""
-    Write-Host "Option 3: Manual configuration in code"
+    Write-Host "Or configure manually in code:"
     Write-Host "  config.Document.SLMConfig = &faria.SLMConfig{"
     Write-Host "      LlamaCLIPath: `"$InstallDir\bin\llama-cli.exe`","
     Write-Host "      ModelPath:    `"$InstallDir\models\$QwenModel`","
