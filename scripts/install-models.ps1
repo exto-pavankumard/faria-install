@@ -32,6 +32,10 @@ if ($Help) {
     exit 0
 }
 
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
+
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host "  Faria ML Models Installation" -ForegroundColor Blue
 Write-Host "========================================" -ForegroundColor Blue

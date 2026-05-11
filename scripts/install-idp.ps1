@@ -35,6 +35,10 @@ if ($Help) {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
+
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "   Faria IDP Dependencies Installation" -ForegroundColor Blue
 Write-Host "=================================================================" -ForegroundColor Cyan
@@ -47,30 +51,23 @@ $TotalSteps = 6  # toolchain + opencv + tesseract + mupdf + onnx + models
 if ($WithLLM) { $TotalSteps++ }
 $script:CurrentStep = 0
 
-function Invoke-Step {
-    param(
-        [string]$StepName,
-        [string]$Script,
-        [hashtable]$Arguments = @{}
-    )
+# Step runner: increments counter, prints header, executes scriptblock, catches failures.
+# Uses a scriptblock so the build system can transform the direct $ScriptDir\*.ps1 calls
+# inside each block into the corresponding inlined Invoke-* function calls.
+function Invoke-IDPStep {
+    param([string]$Name, [scriptblock]$Action)
     $script:CurrentStep++
     Write-Host ""
     Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
-    Write-Host "  Step $($script:CurrentStep)/$TotalSteps`: $StepName" -ForegroundColor Blue
+    Write-Host "  Step $($script:CurrentStep)/$TotalSteps`: $Name" -ForegroundColor Blue
     Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
     Write-Host ""
     try {
-        if ($Arguments.Count -gt 0) {
-            & "$ScriptDir\$Script" @Arguments
-        } else {
-            & "$ScriptDir\$Script"
-        }
-        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
-            throw "Script returned exit code $LASTEXITCODE"
-        }
-        Write-Host "[OK] $StepName completed successfully" -ForegroundColor Green
+        $global:LASTEXITCODE = 0  # prevent stale exit codes from previous steps leaking in
+        & $Action
+        Write-Host "[OK] $Name completed successfully" -ForegroundColor Green
     } catch {
-        Write-Host "[X] $StepName failed: $_" -ForegroundColor Red
+        Write-Host "[X] $Name failed: $_" -ForegroundColor Red
         $script:InstallFailed = $true
     }
 }
@@ -78,44 +75,51 @@ function Invoke-Step {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 # Step 0: Toolchain (MSYS2 + MinGW-w64 + pkg-config) — must come first
-Invoke-Step -StepName "Setting up MinGW-w64 toolchain" `
-            -Script "setup-toolchain.ps1" `
-            -Arguments @{ InstallDir = $InstallDir }
+Invoke-IDPStep -Name "Setting up MinGW-w64 toolchain" -Action {
+    & "$ScriptDir\setup-toolchain.ps1" -InstallDir $InstallDir
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+}
 
 # Step 1: OpenCV
-Invoke-Step -StepName "Installing OpenCV" `
-            -Script "install-opencv.ps1" `
-            -Arguments @{ InstallDir = $InstallDir }
+Invoke-IDPStep -Name "Installing OpenCV" -Action {
+    & "$ScriptDir\install-opencv.ps1" -InstallDir $InstallDir
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+}
 
 # Step 2: Tesseract (includes Leptonica)
-Invoke-Step -StepName "Installing Tesseract OCR" `
-            -Script "install-tesseract.ps1" `
-            -Arguments @{ InstallDir = $InstallDir }
+Invoke-IDPStep -Name "Installing Tesseract OCR" -Action {
+    & "$ScriptDir\install-tesseract.ps1" -InstallDir $InstallDir
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+}
 
 # Step 3: MuPDF
-Invoke-Step -StepName "Installing MuPDF" `
-            -Script "install-mupdf.ps1" `
-            -Arguments @{ InstallDir = $InstallDir }
+Invoke-IDPStep -Name "Installing MuPDF" -Action {
+    & "$ScriptDir\install-mupdf.ps1" -InstallDir $InstallDir
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+}
 
 # Step 4: ONNX Runtime
-$OnnxArgs = @{ InstallDir = $InstallDir }
-if ($GPU) { $OnnxArgs.GPU = $true }
-Invoke-Step -StepName "Installing ONNX Runtime" `
-            -Script "install-onnxruntime.ps1" `
-            -Arguments $OnnxArgs
+Invoke-IDPStep -Name "Installing ONNX Runtime" -Action {
+    $onnxArgs = @{ InstallDir = $InstallDir }
+    if ($GPU) { $onnxArgs.GPU = $true }
+    & "$ScriptDir\install-onnxruntime.ps1" @onnxArgs
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+}
 
 # Step 5: ML Models (DETR + Nemotron + CLIP)
-$ModelArgs = @{ InstallDir = $InstallDir }
-if ($System) { $ModelArgs.System = $true }
-Invoke-Step -StepName "Installing ML Models" `
-            -Script "install-models.ps1" `
-            -Arguments $ModelArgs
+Invoke-IDPStep -Name "Installing ML Models" -Action {
+    $modelArgs = @{ InstallDir = $InstallDir }
+    if ($System) { $modelArgs.System = $true }
+    & "$ScriptDir\install-models.ps1" @modelArgs
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+}
 
 # Step 6 (optional): LLM for IDP
 if ($WithLLM) {
-    Invoke-Step -StepName "Installing LLM for IDP" `
-                -Script "install-slm.ps1" `
-                -Arguments @{ InstallDir = $InstallDir }
+    Invoke-IDPStep -Name "Installing LLM for IDP" -Action {
+        & "$ScriptDir\install-slm.ps1" -InstallDir $InstallDir
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
 }
 
 # ── Set CGO env vars ──────────────────────────────────────────────────────────

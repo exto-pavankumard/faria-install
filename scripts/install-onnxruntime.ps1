@@ -14,6 +14,10 @@ param(
 
 $OnnxRuntimeVersion = "1.22.0"
 
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
+
 if ($Help) {
     Write-Host "Faria ONNX Runtime Installation Script"
     Write-Host ""

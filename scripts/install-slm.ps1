@@ -12,6 +12,10 @@ param(
     [switch]$Help
 )
 
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
+
 # Configuration
 $LlamaCppVersion = "b4549"
 $QwenModel = "qwen2.5-0.5b-instruct-q8_0.gguf"

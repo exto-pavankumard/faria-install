@@ -1,0 +1,290 @@
+name: Test Windows IDP Installation
+
+# Validates dist/install.ps1 — the single-file installer users download via:
+#   irm https://raw.githubusercontent.com/exto360-inc/faria-install/main/dist/install.ps1 | iex
+#
+# Prerequisites before this workflow will pass end-to-end:
+#   1. Run build-opencv.yml (workflow_dispatch) → publishes opencv-4.12.0-windows-x86_64.zip
+#   2. Run build-mupdf.yml  (workflow_dispatch) → publishes mupdf-1.24.9-windows-dev-x86_64.zip
+#   3. pavan-synkrato360/faria-models on HuggingFace must be public,
+#      OR add a HF_TOKEN secret (repo → Settings → Secrets → Actions).
+#
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "dist/install.ps1"
+      - "scripts/*.ps1"
+      - "build/build.sh"
+
+jobs:
+  test-dist-install:
+    name: dist/install.ps1 — windows-2022
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    env:
+      FARIA_INSTALL_DIR: C:\faria-test
+      # Set to the repo that owns the OpenCV/MuPDF GitHub Releases.
+      # Override here so CI on a fork finds its own releases rather than the upstream org.
+      FARIA_RELEASE_REPO: exto-pavankumard/faria-install
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pre-install MinGW-w64 toolchain via the official MSYS2 action.
+      # This mirrors the build-opencv.yml approach: the windows-2022 runner ships
+      # MSYS2 at C:\msys64 already; this action installs the MinGW packages so
+      # Invoke-SetupToolchain (pacman --needed) finds them pre-cached and skips
+      # the slow download step.
+      - name: Set up MSYS2 + MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-tesseract-ocr
+            mingw-w64-x86_64-tesseract-data-eng
+
+      # Expose MinGW bin to all subsequent pwsh steps.
+      # Use MSYS2 bash + cygpath so the correct Windows path is written regardless
+      # of where setup-msys2 actually installed MSYS2 (may differ from C:\msys64).
+      - name: Add MinGW bin to PATH
+        shell: msys2 {0}
+        run: |
+          echo "$(cygpath -w /mingw64/bin)" >> "$GITHUB_PATH"
+
+      # Diagnostic: confirm tesseract and pkgconf are accessible before running installer.
+      - name: Show MSYS2 tool paths
+        shell: pwsh
+        run: |
+          $mingwBin = (Get-Command tesseract -ErrorAction SilentlyContinue)?.Source
+          Write-Host "tesseract on PATH: $(if ($mingwBin) { $mingwBin } else { 'NOT FOUND' })"
+          $pkgBin = (Get-Command pkgconf -ErrorAction SilentlyContinue)?.Source
+          if (-not $pkgBin) { $pkgBin = (Get-Command pkg-config -ErrorAction SilentlyContinue)?.Source }
+          Write-Host "pkg-config on PATH: $(if ($pkgBin) { $pkgBin } else { 'NOT FOUND' })"
+          Write-Host "MSYS/MinGW entries on PATH:"
+          $env:PATH -split ";" | Where-Object { $_ -match "msys|mingw" } | ForEach-Object { Write-Host "  $_" }
+
+      # ── Run the bundled single-file installer ─────────────────────────────────
+      # This is the exact code path users follow with `irm | iex`.
+      # Running it as a file is functionally equivalent: dist/install.ps1 has no
+      # bootstrap detection — all functions are inlined and $PSScriptRoot is unused.
+      #
+      # -System skips local Python export; downloads ONNX from HuggingFace.
+      # If pavan-synkrato360/faria-models is private, set HF_TOKEN as a repo secret.
+      - name: Run dist/install.ps1 (iwr|iex equivalent)
+        shell: pwsh
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          .\dist\install.ps1 -Features idp -System -InstallDir $env:FARIA_INSTALL_DIR
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "dist/install.ps1 exited with code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+      # ── Component verification ────────────────────────────────────────────────
+      # Each check is a separate step so the failure shows the exact component.
+
+      - name: Verify MinGW toolchain
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc -ErrorAction SilentlyContinue
+          if (-not $gcc) { Write-Error "gcc not found on PATH"; exit 1 }
+
+          $gccVer = gcc --version | Select-Object -First 1
+          if ($gccVer -notmatch "mingw|msys2|MSYS2") { Write-Error "gcc is not a MinGW/MSYS2 build: $gccVer"; exit 1 }
+          Write-Host "gcc: $gccVer" -ForegroundColor Green
+
+          # Recent MSYS2 ships pkgconf instead of pkg-config; fall back to PATH-based detection
+          $pkgcfg = if (Test-Path "C:\msys64\mingw64\bin\pkgconf.exe") {
+            "C:\msys64\mingw64\bin\pkgconf.exe"
+          } elseif (Test-Path "C:\msys64\mingw64\bin\pkg-config.exe") {
+            "C:\msys64\mingw64\bin\pkg-config.exe"
+          } else {
+            $cmd = Get-Command pkg-config -ErrorAction SilentlyContinue
+            if (-not $cmd) { $cmd = Get-Command pkgconf -ErrorAction SilentlyContinue }
+            if (-not $cmd) { Write-Error "pkg-config/pkgconf not found"; exit 1 }
+            $cmd.Source
+          }
+          Write-Host "pkg-config: $(& $pkgcfg --version)" -ForegroundColor Green
+
+      - name: Verify OpenCV
+        shell: pwsh
+        run: |
+          $opencvDir = "$env:FARIA_INSTALL_DIR\lib\opencv"
+
+          $dll = Get-ChildItem -Path "$opencvDir\bin" -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $dll) { Write-Error "libopencv_core*.dll not found under $opencvDir\bin"; exit 1 }
+          $sz = [math]::Round($dll.Length / 1MB, 1)
+          if ($sz -lt 1) { Write-Error "$($dll.Name) too small ($sz MB)"; exit 1 }
+          Write-Host "OpenCV core DLL: $($dll.Name) ($sz MB)" -ForegroundColor Green
+
+          $pcFile = "$opencvDir\lib\pkgconfig\opencv4.pc"
+          if (-not (Test-Path $pcFile)) { Write-Error "opencv4.pc not found"; exit 1 }
+          Write-Host "opencv4.pc: OK" -ForegroundColor Green
+
+          # PE integrity check
+          $objdump = "C:\msys64\mingw64\bin\objdump.exe"
+          if (Test-Path $objdump) {
+            $deps = & $objdump -p $dll.FullName | Select-String "DLL Name:"
+            if (-not $deps) { Write-Error "objdump found no imports — DLL may be corrupt"; exit 1 }
+            Write-Host "DLL imports: $($deps.Count) entries" -ForegroundColor Green
+          }
+
+          $pkgcfgPc = "C:\msys64\mingw64\lib\pkgconfig\opencv4.pc"
+          if (Test-Path $pkgcfgPc) {
+            Write-Host "opencv4.pc registered in MSYS2 pkgconfig dir" -ForegroundColor Green
+          } else {
+            Write-Warning "opencv4.pc not registered at $pkgcfgPc"
+          }
+
+      - name: Verify Tesseract OCR
+        shell: pwsh
+        run: |
+          $tessDir = "$env:FARIA_INSTALL_DIR\tesseract"
+          $tessExe = "$tessDir\tesseract.exe"
+          if (-not (Test-Path $tessExe)) { Write-Error "tesseract.exe not found at $tessExe"; exit 1 }
+
+          $ver = & $tessExe --version 2>&1 | Select-Object -First 1
+          Write-Host "Tesseract: $ver" -ForegroundColor Green
+
+          $tessdata = "$tessDir\tessdata"
+          if (-not (Test-Path $tessdata)) { Write-Error "tessdata directory missing"; exit 1 }
+          Write-Host "tessdata: OK" -ForegroundColor Green
+
+          $prefix = [Environment]::GetEnvironmentVariable("TESSDATA_PREFIX", "User")
+          if ($prefix) { Write-Host "TESSDATA_PREFIX: $prefix" -ForegroundColor Green }
+          else { Write-Warning "TESSDATA_PREFIX not set in user environment" }
+
+          if (Test-Path "$tessDir\include\leptonica\allheaders.h") {
+            Write-Host "Leptonica headers: OK" -ForegroundColor Green
+          } else {
+            Write-Warning "Leptonica headers not found (CGO builds may fail)"
+          }
+
+      - name: Verify MuPDF static libs
+        shell: pwsh
+        run: |
+          $mupdfDir = "$env:FARIA_INSTALL_DIR\lib\mupdf"
+
+          foreach ($lib in @("$mupdfDir\lib\libmupdf.a", "$mupdfDir\lib\libmupdf-third.a")) {
+            if (-not (Test-Path $lib)) { Write-Error "$lib not found"; exit 1 }
+            $sz = [math]::Round((Get-Item $lib).Length / 1MB, 1)
+            if ($sz -lt 1) { Write-Error "$(Split-Path $lib -Leaf) too small ($sz MB)"; exit 1 }
+            Write-Host "$(Split-Path $lib -Leaf): OK ($sz MB)" -ForegroundColor Green
+          }
+
+          if (-not (Test-Path "$mupdfDir\include\mupdf\fitz.h")) {
+            Write-Error "fitz.h not found"; exit 1
+          }
+          Write-Host "fitz.h: OK" -ForegroundColor Green
+
+          $mutool = "$env:FARIA_INSTALL_DIR\bin\mutool.exe"
+          if (Test-Path $mutool) {
+            Write-Host "mutool: $( & $mutool -v 2>&1 | Select-Object -First 1 )" -ForegroundColor Green
+          } else {
+            Write-Warning "mutool.exe not found at $mutool"
+          }
+
+      - name: Verify ONNX Runtime
+        shell: pwsh
+        run: |
+          $onnxDll = "$env:FARIA_INSTALL_DIR\lib\onnxruntime\onnxruntime.dll"
+          if (-not (Test-Path $onnxDll)) { Write-Error "onnxruntime.dll not found"; exit 1 }
+          $sz = [math]::Round((Get-Item $onnxDll).Length / 1MB, 1)
+          if ($sz -lt 10) { Write-Error "onnxruntime.dll too small ($sz MB) — likely corrupt"; exit 1 }
+          Write-Host "onnxruntime.dll: $sz MB" -ForegroundColor Green
+
+          $envPath = [Environment]::GetEnvironmentVariable("FARIA_ONNXRUNTIME_PATH", "User")
+          if ($envPath) { Write-Host "FARIA_ONNXRUNTIME_PATH: $envPath" -ForegroundColor Green }
+          else { Write-Warning "FARIA_ONNXRUNTIME_PATH not set in user environment" }
+
+      - name: Verify ONNX models
+        shell: pwsh
+        run: |
+          $modelsDir = "$env:FARIA_INSTALL_DIR\models"
+          $models = @(
+            @{ Path = "$modelsDir\detr_layout_detection.onnx";   Name = "DETR";     MinMB = 30  },
+            @{ Path = "$modelsDir\nemotron_table_structure.onnx"; Name = "Nemotron"; MinMB = 30  },
+            @{ Path = "$modelsDir\clip_vision.onnx";              Name = "CLIP";     MinMB = 100 }
+          )
+          $allOk = $true
+          foreach ($m in $models) {
+            if (-not (Test-Path $m.Path)) {
+              Write-Error "$($m.Name) not found: $($m.Path)"; $allOk = $false; continue
+            }
+            $sz = [math]::Round((Get-Item $m.Path).Length / 1MB, 1)
+            if ($sz -lt $m.MinMB) {
+              Write-Error "$($m.Name): $sz MB (expected > $($m.MinMB) MB) — possible truncated download"
+              $allOk = $false
+            } else {
+              Write-Host "$($m.Name): OK ($sz MB)" -ForegroundColor Green
+            }
+          }
+          if (-not $allOk) { exit 1 }
+
+      - name: Verify pkg-config resolves CGO libs
+        shell: pwsh
+        run: |
+          # Always resolve via PATH — matches exactly how the installer detected the binary,
+          # so PKG_CONFIG_PATH lands on the same prefix where the .pc files were written.
+          $cmd = Get-Command pkgconf -ErrorAction SilentlyContinue
+          if (-not $cmd) { $cmd = Get-Command pkg-config -ErrorAction SilentlyContinue }
+          if (-not $cmd) { Write-Error "pkg-config/pkgconf not found on PATH"; exit 1 }
+          $pkgcfg = $cmd.Source
+          if (-not (Test-Path $pkgcfg)) { Write-Error "pkg-config not found at $pkgcfg"; exit 1 }
+          Write-Host "Using pkg-config: $pkgcfg" -ForegroundColor Yellow
+          $env:PKG_CONFIG_PATH = Join-Path (Split-Path -Parent (Split-Path -Parent $pkgcfg)) "lib\pkgconfig"
+          Write-Host "PKG_CONFIG_PATH: $($env:PKG_CONFIG_PATH)" -ForegroundColor Yellow
+
+          $required = @("opencv4", "mupdf")
+          $optional = @("tesseract", "lept")
+          $failed = @()
+
+          foreach ($lib in ($required + $optional)) {
+            & $pkgcfg --exists $lib 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $ver = & $pkgcfg --modversion $lib 2>&1
+              Write-Host "pkg-config $lib : OK (v$ver)" -ForegroundColor Green
+            } elseif ($lib -in $required) {
+              Write-Error "pkg-config $lib : MISSING (required for IDP CGO)"
+              $failed += $lib
+            } else {
+              Write-Warning "pkg-config $lib : not found (optional)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Verify CGO environment variables
+        shell: pwsh
+        run: |
+          $cflags  = [Environment]::GetEnvironmentVariable("CGO_CFLAGS",  "User")
+          $ldflags = [Environment]::GetEnvironmentVariable("CGO_LDFLAGS", "User")
+
+          if (-not $cflags)  { Write-Error "CGO_CFLAGS not set in user environment";  exit 1 }
+          if (-not $ldflags) { Write-Error "CGO_LDFLAGS not set in user environment"; exit 1 }
+
+          Write-Host "CGO_CFLAGS:  $cflags"  -ForegroundColor Green
+          Write-Host "CGO_LDFLAGS: $ldflags" -ForegroundColor Green
+
+          if ($cflags  -notmatch "-I") { Write-Warning "CGO_CFLAGS has no -I flags" }
+          if ($ldflags -notmatch "-L") { Write-Warning "CGO_LDFLAGS has no -L flags" }
+
+      # Upload the install tree on failure for post-mortem inspection.
+      - name: Upload install tree on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faria-install-debug-${{ github.run_id }}
+          path: ${{ env.FARIA_INSTALL_DIR }}
+          retention-days: 3

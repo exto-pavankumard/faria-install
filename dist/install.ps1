@@ -15,7 +15,7 @@
 #   .\install.ps1 -Features all
 #
 
-# Build date: 2026-05-08T09:22:17Z
+# Build date: 2026-05-11T10:40:02Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 param(
@@ -233,6 +233,23 @@ function Invoke-ChecksumVerify {
 }
 
 # ============================================================================
+# MSYS2 PATH DETECTION
+# ============================================================================
+
+# Return the MinGW64 pkgconfig directory for whichever MSYS2 installation is
+# active. setup-msys2@v2 may install to a non-default location (e.g. D:\a\_temp\msys64)
+# instead of C:\msys64. Resolving via the pkgconf/pkg-config binary on PATH
+# (which setup-msys2 adds) gives the canonical location.
+function Get-MSYS2PkgConfigDir {
+    $pkgCmd = Get-Command pkgconf -ErrorAction SilentlyContinue
+    if (-not $pkgCmd) { $pkgCmd = Get-Command pkg-config -ErrorAction SilentlyContinue }
+    if ($pkgCmd) {
+        return Join-Path (Split-Path -Parent (Split-Path -Parent $pkgCmd.Source)) "lib\pkgconfig"
+    }
+    return "C:\msys64\mingw64\lib\pkgconfig"  # fallback for machines without MSYS2 on PATH
+}
+
+# ============================================================================
 # BITS DOWNLOAD WRAPPER
 # ============================================================================
 
@@ -306,13 +323,10 @@ function Initialize-Python {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria Python Setup Script"
@@ -321,7 +335,7 @@ function Initialize-Python {
         Write-Host ""
         Write-Host "Ensures Python 3.12.x is available for onnxruntime compatibility."
         Write-Host "Returns the path to the Python interpreter."
-        exit 0
+        return
     }
     
     # Required Python version
@@ -404,7 +418,7 @@ function Initialize-Python {
             Write-Host "  2. Run: Invoke-WebRequest -UseBasicParsing -Uri `"https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1`" -OutFile `"./install-pyenv-win.ps1`"; &`"./install-pyenv-win.ps1`""
             Write-Host ""
             Write-Host "Or install Python 3.12 directly from: https://www.python.org/downloads/"
-            exit 1
+            throw "Installation step failed"
         }
     
         # Set up environment for current session
@@ -429,7 +443,7 @@ function Initialize-Python {
     
         if (-not (Test-Path $pyenvExe)) {
             Write-Host "Error: pyenv-win installation failed." -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         # Check if Python 3.12 is already installed via pyenv
@@ -447,7 +461,7 @@ function Initialize-Python {
             if (-not $latest312) {
                 Write-Host "Error: Could not find Python $RequiredMajor.$RequiredMinor.x in pyenv." -ForegroundColor Red
                 Write-Host "  Try running: pyenv install --list | Select-String '3.12'"
-                exit 1
+                throw "Installation step failed"
             }
     
             & $pyenvExe install $latest312
@@ -484,7 +498,7 @@ function Initialize-Python {
     
     if (-not $pythonPath -or -not (Test-Path $pythonPath)) {
         Write-Host "Error: Could not find or install Python $RequiredMajor.$RequiredMinor" -ForegroundColor Red
-        exit 1
+        throw "Installation step failed"
     }
     
     # Return the path
@@ -498,14 +512,10 @@ function Invoke-SetupToolchain {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria Toolchain Setup Script"
@@ -517,11 +527,15 @@ function Invoke-SetupToolchain {
         Write-Host "  -Help            Show this help message"
         Write-Host ""
         Write-Host "Installs MSYS2 + MinGW-w64 + pkg-config for CGO compilation."
-        exit 0
+        return
     }
     
-    $MinGWBin = "C:\msys64\mingw64\bin"
-    $PkgConfigDir = "C:\msys64\mingw64\lib\pkgconfig"
+    $MinGWBin = "C:\msys64\mingw64\bin"        # used only in the pacman-install fallback path
+    $PkgConfigDir = "C:\msys64\mingw64\lib\pkgconfig"  # overridden dynamically when MSYS2 is on PATH
+    
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
     
     Write-Host "========================================" -ForegroundColor Blue
     Write-Host "  Faria Toolchain Setup (MinGW-w64)" -ForegroundColor Blue
@@ -532,19 +546,21 @@ function Invoke-SetupToolchain {
     $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
     if ($gccCmd) {
         $gccVer = (& gcc --version 2>&1 | Select-Object -First 1)
-        if ($gccVer -match "mingw") {
-            Write-Host "MinGW-w64 gcc already available: $gccVer" -ForegroundColor Green
+        if ($gccVer -match "mingw|msys2|MSYS2") {
+            Write-Host "MinGW-w64/MSYS2 gcc already available: $gccVer" -ForegroundColor Green
             Write-Host ""
     
-            # Ensure PKG_CONFIG_PATH is set for MSYS2
+            # Resolve the actual pkgconfig dir for this MSYS2 installation (may not be C:\msys64)
+            $PkgConfigDir = Get-MSYS2PkgConfigDir
             New-Item -ItemType Directory -Force -Path $PkgConfigDir | Out-Null
             $existingPcp = [Environment]::GetEnvironmentVariable("PKG_CONFIG_PATH", "User")
             if (-not ($existingPcp -split ";" | Where-Object { $_ -eq $PkgConfigDir })) {
                 $newPcp = if ($existingPcp) { "$existingPcp;$PkgConfigDir" } else { $PkgConfigDir }
                 [Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", $newPcp, "User")
                 $env:PKG_CONFIG_PATH = $newPcp
+                Write-Host "Set PKG_CONFIG_PATH to include $PkgConfigDir." -ForegroundColor Green
             }
-            exit 0
+            return
         }
     }
     
@@ -559,13 +575,13 @@ function Invoke-SetupToolchain {
         if (-not $winget) {
             Write-Host "Error: winget not found." -ForegroundColor Red
             Write-Host "Install winget (App Installer) from the Microsoft Store, then re-run." -ForegroundColor Yellow
-            exit 1
+            throw "Installation step failed"
         }
     
         & winget install --id MSYS2.MSYS2 --silent --accept-source-agreements --accept-package-agreements
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Error: winget install MSYS2 failed (exit code $LASTEXITCODE)." -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         Write-Host "MSYS2 installed." -ForegroundColor Green
@@ -581,7 +597,7 @@ function Invoke-SetupToolchain {
     $pacman = "C:\msys64\usr\bin\pacman.exe"
     if (-not (Test-Path $pacman)) {
         Write-Host "Error: pacman not found at $pacman" -ForegroundColor Red
-        exit 1
+        throw "Installation step failed"
     }
     
     $packages = @(
@@ -664,15 +680,14 @@ function Invoke-InstallOpenCV {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
     
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Force,
-        [switch]$Help
-    )
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
     
     if ($Help) {
         Write-Host "Faria OpenCV Installation Script"
@@ -683,17 +698,19 @@ function Invoke-InstallOpenCV {
         Write-Host "  -InstallDir DIR  Install to DIR (default: $env:USERPROFILE\.faria)"
         Write-Host "  -Force           Reinstall even if already present"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
     $OpenCVVersion = "4.12.0"
     $OpenCVDir     = "$InstallDir\lib\opencv"
-    $PkgConfigDir  = "C:\msys64\mingw64\lib\pkgconfig"
+    $PkgConfigDir  = Get-MSYS2PkgConfigDir
     
-    # Asset hosted in faria-install GitHub Releases
+    # Asset hosted in faria-install GitHub Releases.
+    # Override FARIA_RELEASE_REPO env var to download from a fork (e.g. for CI on a fork).
+    $ReleaseRepo   = if ($env:FARIA_RELEASE_REPO) { $env:FARIA_RELEASE_REPO } else { "exto360-inc/faria-install" }
     $OpenCVAsset   = "opencv-$OpenCVVersion-windows-x86_64.zip"
-    $OpenCVUrl     = "https://github.com/exto360-inc/faria-install/releases/download/opencv-$OpenCVVersion/$OpenCVAsset"
-    $ChecksumsUrl  = "https://github.com/exto360-inc/faria-install/releases/download/opencv-$OpenCVVersion/checksums.txt"
+    $OpenCVUrl     = "https://github.com/$ReleaseRepo/releases/download/opencv-$OpenCVVersion/$OpenCVAsset"
+    $ChecksumsUrl  = "https://github.com/$ReleaseRepo/releases/download/opencv-$OpenCVVersion/checksums.txt"
     
     Write-Host "========================================" -ForegroundColor Blue
     Write-Host "  Faria OpenCV Installation" -ForegroundColor Blue
@@ -707,14 +724,14 @@ function Invoke-InstallOpenCV {
     
     if ($Arch -ne "AMD64") {
         Write-Host "Error: Only x86_64 (AMD64) Windows is supported for OpenCV CGO builds." -ForegroundColor Red
-        exit 1
+        throw "Installation step failed"
     }
     
     # ── Already installed? ────────────────────────────────────────────────────────
-    $dllPath = "$OpenCVDir\bin\libopencv_world41200.dll"
-    if ((Test-Path $dllPath) -and -not $Force) {
+    $existingDll = Get-ChildItem -Path "$OpenCVDir\bin" -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($existingDll -and -not $Force) {
         Write-Host "OpenCV $OpenCVVersion already installed at $OpenCVDir" -ForegroundColor Green
-        exit 0
+        return
     }
     
     New-Item -ItemType Directory -Force -Path $OpenCVDir | Out-Null
@@ -751,11 +768,13 @@ function Invoke-InstallOpenCV {
     
         # Move contents into install location
         if (Test-Path $OpenCVDir) { Remove-Item -Recurse -Force $OpenCVDir }
-        $inner = Get-ChildItem -Path $ExtractDir -Directory | Select-Object -First 1
-        if ($inner) {
-            Move-Item -Path $inner.FullName -Destination $OpenCVDir -Force
+        $rootDirs  = @(Get-ChildItem -Path $ExtractDir -Directory)
+        $rootFiles = @(Get-ChildItem -Path $ExtractDir -File)
+        if ($rootDirs.Count -eq 1 -and $rootFiles.Count -eq 0) {
+            # Single wrapper directory (e.g. opencv-4.12.0/) — promote its contents
+            Move-Item -Path $rootDirs[0].FullName -Destination $OpenCVDir -Force
         } else {
-            # Flat archive — contents go directly into $OpenCVDir
+            # Flat archive — include/, lib/, bin/ directly at root
             Move-Item -Path $ExtractDir -Destination $OpenCVDir -Force
         }
         Write-Host "  Extracted to: $OpenCVDir" -ForegroundColor Green
@@ -780,7 +799,7 @@ function Invoke-InstallOpenCV {
     
         # ── Verify ────────────────────────────────────────────────────────────────
         Write-Host "Verifying installation..." -ForegroundColor Yellow
-        $dll = Get-ChildItem -Path "$OpenCVDir\bin" -Filter "libopencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $dll = Get-ChildItem -Path "$OpenCVDir\bin" -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($dll) {
             Write-Host "  OpenCV DLL: $($dll.Name)" -ForegroundColor Green
         } else {
@@ -795,6 +814,7 @@ function Invoke-InstallOpenCV {
             } else {
                 Write-Host "  pkg-config --exists opencv4: FAILED (may need new shell session)" -ForegroundColor Yellow
             }
+            $global:LASTEXITCODE = 0  # informational check — never fail the install step
         }
     
         Write-Host ""
@@ -817,21 +837,21 @@ function Invoke-InstallTesseract {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
     
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Force,
-        [switch]$Help
-    )
-    
     # Configuration
-    $TesseractVersion = "5.5.0"
-    $TesseractDate    = "20241111"
+    # UB-Mannheim releases embed the build date in the version string (e.g. 5.4.0.20240606).
+    $TesseractVersion = "5.4.0.20240606"
     $TesseractDir     = "$InstallDir\tesseract"
-    $PkgConfigDir     = "C:\msys64\mingw64\lib\pkgconfig"
+    
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
+    
+    $PkgConfigDir = Get-MSYS2PkgConfigDir
     
     if ($Help) {
         Write-Host "Faria Tesseract OCR Installation Script"
@@ -842,7 +862,7 @@ function Invoke-InstallTesseract {
         Write-Host "  -InstallDir DIR  Install to DIR (default: $env:USERPROFILE\.faria)"
         Write-Host "  -Force           Reinstall even if already present"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
     Write-Host "========================================" -ForegroundColor Blue
@@ -855,10 +875,9 @@ function Invoke-InstallTesseract {
     Write-Host "Install directory: $TesseractDir"
     Write-Host ""
     
-    # Only x86_64 supported (UB-Mannheim ships AMD64 builds)
     if ($Arch -ne "AMD64") {
-        Write-Host "Error: Only x86_64 (AMD64) Windows is supported by the UB-Mannheim installer." -ForegroundColor Red
-        exit 1
+        Write-Host "Error: Only x86_64 (AMD64) Windows is supported." -ForegroundColor Red
+        throw "Installation step failed"
     }
     
     # ── Already installed? ────────────────────────────────────────────────────────
@@ -866,13 +885,127 @@ function Invoke-InstallTesseract {
     if ((Test-Path $tessExe) -and -not $Force) {
         $ver = (& $tessExe --version 2>&1 | Select-Object -First 1)
         Write-Host "Tesseract already installed: $ver" -ForegroundColor Green
-        exit 0
+        return
     }
     
-    $TesseractAsset = "tesseract-ocr-w64-setup-$TesseractVersion.$TesseractDate.exe"
-    $TesseractUrl   = "https://github.com/UB-Mannheim/tesseract/releases/download/v$TesseractVersion/$TesseractAsset"
+    # ── Helper: register .pc files with MSYS2 pkg-config ─────────────────────────
+    function Register-TesseractPkgConfig {
+        param([string]$SrcPkgConfigDir)
+        New-Item -ItemType Directory -Force -Path $PkgConfigDir | Out-Null
+        foreach ($pc in @("tesseract.pc", "lept.pc")) {
+            $src = "$SrcPkgConfigDir\$pc"
+            if (Test-Path $src) {
+                $dst = "$PkgConfigDir\$pc"
+                # Skip when MSYS2 source dir IS the target dir (dynamic path detection resolves to same location)
+                if ([System.IO.Path]::GetFullPath($src).ToLower() -eq [System.IO.Path]::GetFullPath($dst).ToLower()) {
+                    Write-Host "  $pc already in pkgconfig dir (source = destination)." -ForegroundColor Green
+                    continue
+                }
+                Copy-Item $src $dst -Force
+                Write-Host "  $pc registered in MSYS2 pkgconfig dir." -ForegroundColor Green
+            }
+        }
+    }
     
+    # ── PRIMARY: MSYS2/MinGW64 Tesseract ─────────────────────────────────────────
+    # When msys2/setup-msys2@v2 pre-installs mingw-w64-x86_64-tesseract-ocr the
+    # UB-Mannheim NSIS installer (which hangs in headless CI) is never needed.
+    $msys2Base    = "C:\msys64\mingw64"
+    $msys2TessExe = "$msys2Base\bin\tesseract.exe"
+    
+    # Also search PATH for tesseract (handles non-default MSYS2 install paths).
+    # setup-msys2@v2 adds the MSYS2 bin dir to PATH, so Get-Command is reliable.
+    if (-not (Test-Path $msys2TessExe)) {
+        $tessCmd = Get-Command tesseract -ErrorAction SilentlyContinue
+        if ($tessCmd -and ($tessCmd.Source -match "mingw64|msys64")) {
+            $msys2TessExe = $tessCmd.Source
+            $msys2Base    = Split-Path -Parent (Split-Path -Parent $tessCmd.Source)
+            Write-Host "MSYS2 Tesseract found on PATH: $msys2TessExe" -ForegroundColor Yellow
+        }
+    }
+    
+    if (Test-Path $msys2TessExe) {
+        Write-Host "MSYS2 Tesseract detected — populating $TesseractDir from MSYS2..." -ForegroundColor Yellow
+        Write-Host ""
+    
+        New-Item -ItemType Directory -Force -Path $TesseractDir | Out-Null
+    
+        # tesseract.exe
+        Copy-Item $msys2TessExe "$TesseractDir\tesseract.exe" -Force
+        Write-Host "  tesseract.exe: copied" -ForegroundColor Green
+    
+        # tessdata — copy .traineddata files
+        $msys2Tessdata = "$msys2Base\share\tessdata"
+        $TessdataPath  = "$TesseractDir\tessdata"
+        if (Test-Path $msys2Tessdata) {
+            New-Item -ItemType Directory -Force -Path $TessdataPath | Out-Null
+            Get-ChildItem $msys2Tessdata -Filter "*.traineddata" |
+                Copy-Item -Destination $TessdataPath -Force
+            Write-Host "  tessdata: copied" -ForegroundColor Green
+        }
+    
+        # Headers: tesseract/ and leptonica/
+        New-Item -ItemType Directory -Force -Path "$TesseractDir\include" | Out-Null
+        foreach ($hdr in @("tesseract", "leptonica")) {
+            $src = "$msys2Base\include\$hdr"
+            if (Test-Path $src) {
+                Copy-Item $src "$TesseractDir\include\$hdr" -Recurse -Force
+                Write-Host "  include/${hdr}: copied" -ForegroundColor Green
+            }
+        }
+    
+        # Import libs needed for CGO linking
+        New-Item -ItemType Directory -Force -Path "$TesseractDir\lib" | Out-Null
+        foreach ($pattern in @("libtesseract*", "liblept*")) {
+            Get-ChildItem "$msys2Base\lib" -Filter $pattern -ErrorAction SilentlyContinue |
+                Copy-Item -Destination "$TesseractDir\lib\" -Force
+        }
+        Write-Host "  lib: import libs copied" -ForegroundColor Green
+    
+        # pkg-config .pc files — copy to $TesseractDir\lib\pkgconfig AND MSYS2 dir
+        $msys2PkgConfig = "$msys2Base\lib\pkgconfig"
+        New-Item -ItemType Directory -Force -Path "$TesseractDir\lib\pkgconfig" | Out-Null
+        foreach ($pc in @("tesseract.pc", "lept.pc")) {
+            $src = "$msys2PkgConfig\$pc"
+            if (Test-Path $src) {
+                Copy-Item $src "$TesseractDir\lib\pkgconfig\$pc" -Force
+            }
+        }
+        Register-TesseractPkgConfig -SrcPkgConfigDir $msys2PkgConfig
+    
+        # Set TESSDATA_PREFIX
+        Set-UserEnv -Name "TESSDATA_PREFIX" -Value $TessdataPath
+        Write-Host "TESSDATA_PREFIX set to: $TessdataPath" -ForegroundColor Green
+        Write-Host ""
+    
+        # Verify
+        Write-Host "Verifying installation..." -ForegroundColor Yellow
+        $ver = (& "$TesseractDir\tesseract.exe" --version 2>&1 | Select-Object -First 1)
+        Write-Host "  Tesseract: $ver" -ForegroundColor Green
+    
+        if (Test-Path "$TesseractDir\include\leptonica") {
+            Write-Host "  Leptonica headers: OK" -ForegroundColor Green
+        }
+    
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "  Tesseract Installation Complete!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Source: MSYS2 ($msys2Base)"
+        Write-Host "Installed to: $TesseractDir"
+        Write-Host "TESSDATA_PREFIX: $TessdataPath"
+        Write-Host ""
+        return
+    }
+    
+    # ── FALLBACK: UB-Mannheim NSIS installer ─────────────────────────────────────
+    Write-Host "MSYS2 not found — using UB-Mannheim NSIS installer..." -ForegroundColor Yellow
+    Write-Host ""
     Write-Host "Tesseract version: $TesseractVersion"
+    
+    $TesseractAsset = "tesseract-ocr-w64-setup-$TesseractVersion.exe"
+    $TesseractUrl   = "https://github.com/UB-Mannheim/tesseract/releases/download/v$TesseractVersion/$TesseractAsset"
     Write-Host "Installer: $TesseractAsset"
     Write-Host ""
     
@@ -891,9 +1024,14 @@ function Invoke-InstallTesseract {
         Write-Host ""
     
         # ── Silent NSIS install ───────────────────────────────────────────────────
-        # /S = silent, /D = destination (must be last arg, no quotes around path)
+        # /S = silent mode, /D = destination (must be last arg, no quotes around path)
         Write-Host "Running silent installer to $TesseractDir..." -ForegroundColor Yellow
-        Start-Process -FilePath $InstallerPath -ArgumentList "/S /D=$TesseractDir" -Wait -NoNewWindow
+        $proc = Start-Process -FilePath $InstallerPath `
+                              -ArgumentList @("/S", "/D=$TesseractDir") `
+                              -Wait -NoNewWindow -PassThru
+        if ($proc.ExitCode -ne 0) {
+            throw "Installer exited with code $($proc.ExitCode)"
+        }
         Write-Host "  Installer finished." -ForegroundColor Green
         Write-Host ""
     
@@ -904,25 +1042,7 @@ function Invoke-InstallTesseract {
         Write-Host ""
     
         # ── Register pkg-config .pc files ─────────────────────────────────────────
-        # UB-Mannheim bundles .pc files under lib\pkgconfig\
-        New-Item -ItemType Directory -Force -Path $PkgConfigDir | Out-Null
-    
-        $pcFiles = @("tesseract.pc", "lept.pc")
-        foreach ($pc in $pcFiles) {
-            $pcSrc = "$TesseractDir\lib\pkgconfig\$pc"
-            if (Test-Path $pcSrc) {
-                $pcDest = "$PkgConfigDir\$pc"
-                Copy-Item $pcSrc $pcDest -Force
-                # Fix prefix path
-                $prefix = ($TesseractDir -replace '\\', '/').TrimEnd('/')
-                (Get-Content $pcDest) -replace 'prefix=.*', "prefix=$prefix" |
-                    Set-Content $pcDest
-                Write-Host "  $pc registered." -ForegroundColor Green
-            } else {
-                Write-Host "  Warning: $pcSrc not found — skipping $pc registration." -ForegroundColor Yellow
-            }
-        }
-        Write-Host ""
+        Register-TesseractPkgConfig -SrcPkgConfigDir "$TesseractDir\lib\pkgconfig"
     
         # ── Verify ────────────────────────────────────────────────────────────────
         Write-Host "Verifying installation..." -ForegroundColor Yellow
@@ -932,23 +1052,13 @@ function Invoke-InstallTesseract {
             Write-Host "  Tesseract: $ver" -ForegroundColor Green
         } else {
             Write-Host "  tesseract.exe: NOT FOUND at $tessExe" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         if (Test-Path "$TesseractDir\include\leptonica") {
             Write-Host "  Leptonica headers: OK" -ForegroundColor Green
         } else {
             Write-Host "  Leptonica headers: not found (CGO may not work)" -ForegroundColor Yellow
-        }
-    
-        $pkgTest = Get-Command pkg-config -ErrorAction SilentlyContinue
-        if ($pkgTest) {
-            & pkg-config --exists tesseract lept 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  pkg-config --exists tesseract lept: OK" -ForegroundColor Green
-            } else {
-                Write-Host "  pkg-config --exists tesseract lept: FAILED (may need new shell session)" -ForegroundColor Yellow
-            }
         }
     
         Write-Host ""
@@ -972,15 +1082,10 @@ function Invoke-InstallMuPDF {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Force,
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria MuPDF Installation Script"
@@ -991,17 +1096,24 @@ function Invoke-InstallMuPDF {
         Write-Host "  -InstallDir DIR  Install to DIR (default: $env:USERPROFILE\.faria)"
         Write-Host "  -Force           Reinstall even if already present"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
     $MuPDFVersion  = "1.24.9"
     $MuPDFDir      = "$InstallDir\lib\mupdf"
     $BinDir        = "$InstallDir\bin"
-    $PkgConfigDir  = "C:\msys64\mingw64\lib\pkgconfig"
     
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
+    
+    $PkgConfigDir = Get-MSYS2PkgConfigDir
+    
+    # Override FARIA_RELEASE_REPO env var to download from a fork (e.g. for CI on a fork).
+    $ReleaseRepo   = if ($env:FARIA_RELEASE_REPO) { $env:FARIA_RELEASE_REPO } else { "exto360-inc/faria-install" }
     $MuPDFAsset    = "mupdf-$MuPDFVersion-windows-dev-x86_64.zip"
-    $MuPDFUrl      = "https://github.com/exto360-inc/faria-install/releases/download/mupdf-$MuPDFVersion/$MuPDFAsset"
-    $ChecksumsUrl  = "https://github.com/exto360-inc/faria-install/releases/download/mupdf-$MuPDFVersion/checksums.txt"
+    $MuPDFUrl      = "https://github.com/$ReleaseRepo/releases/download/mupdf-$MuPDFVersion/$MuPDFAsset"
+    $ChecksumsUrl  = "https://github.com/$ReleaseRepo/releases/download/mupdf-$MuPDFVersion/checksums.txt"
     
     Write-Host "========================================" -ForegroundColor Blue
     Write-Host "  Faria MuPDF Installation" -ForegroundColor Blue
@@ -1015,14 +1127,14 @@ function Invoke-InstallMuPDF {
     
     if ($Arch -ne "AMD64") {
         Write-Host "Error: Only x86_64 (AMD64) Windows is supported for MuPDF CGO builds." -ForegroundColor Red
-        exit 1
+        throw "Installation step failed"
     }
     
     # ── Already installed? ────────────────────────────────────────────────────────
     $libPath = "$MuPDFDir\lib\libmupdf.a"
     if ((Test-Path $libPath) -and -not $Force) {
         Write-Host "MuPDF $MuPDFVersion already installed at $MuPDFDir" -ForegroundColor Green
-        exit 0
+        return
     }
     
     New-Item -ItemType Directory -Force -Path $MuPDFDir | Out-Null
@@ -1054,17 +1166,10 @@ function Invoke-InstallMuPDF {
         Write-Host ""
     
         # ── Extract ───────────────────────────────────────────────────────────────
+        # The zip is flat: include/, lib/, bin/ at root (no top-level wrapper dir).
         Write-Host "Extracting MuPDF..." -ForegroundColor Yellow
-        $ExtractDir = Join-Path $TempDir "mupdf-extract"
-        Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-    
         if (Test-Path $MuPDFDir) { Remove-Item -Recurse -Force $MuPDFDir }
-        $inner = Get-ChildItem -Path $ExtractDir -Directory | Select-Object -First 1
-        if ($inner) {
-            Move-Item -Path $inner.FullName -Destination $MuPDFDir -Force
-        } else {
-            Move-Item -Path $ExtractDir -Destination $MuPDFDir -Force
-        }
+        Expand-Archive -Path $ZipPath -DestinationPath $MuPDFDir -Force
         Write-Host "  Extracted to: $MuPDFDir" -ForegroundColor Green
     
         # Copy mutool.exe to bin/
@@ -1112,6 +1217,7 @@ function Invoke-InstallMuPDF {
             } else {
                 Write-Host "  pkg-config --exists mupdf: FAILED (may need new shell session)" -ForegroundColor Yellow
             }
+            $global:LASTEXITCODE = 0  # informational check — never fail the install step
         }
     
         Write-Host ""
@@ -1134,18 +1240,16 @@ function Invoke-InstallOnnxRuntime {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
     
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$GPU,
-        [switch]$Force,
-        [switch]$Help
-    )
-    
     $OnnxRuntimeVersion = "1.22.0"
+    
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
     
     if ($Help) {
         Write-Host "Faria ONNX Runtime Installation Script"
@@ -1157,7 +1261,7 @@ function Invoke-InstallOnnxRuntime {
         Write-Host "  -GPU             Install GPU/CUDA version"
         Write-Host "  -Force           Reinstall even if already present"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
     Write-Host "========================================" -ForegroundColor Blue
@@ -1176,7 +1280,7 @@ function Invoke-InstallOnnxRuntime {
         if (-not $nvidiaSmi) {
             Write-Host "Error: -GPU requested but nvidia-smi not found." -ForegroundColor Red
             Write-Host "Install CUDA Toolkit 11.8+ from https://developer.nvidia.com/cuda-downloads"
-            exit 1
+            throw "Installation step failed"
         }
         $cudaVersion = (& nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | Select-Object -First 1)
         Write-Host "CUDA driver detected: $cudaVersion" -ForegroundColor Green
@@ -1202,7 +1306,7 @@ function Invoke-InstallOnnxRuntime {
         }
         default {
             Write-Host "Unsupported architecture: $Arch" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     }
     
@@ -1219,7 +1323,7 @@ function Invoke-InstallOnnxRuntime {
     if ((Test-Path $LibPath) -and -not $Force) {
         $libSize = [math]::Round((Get-Item $LibPath).Length / 1MB, 1)
         Write-Host "ONNX Runtime already installed: $LibPath ($libSize MB)" -ForegroundColor Green
-        exit 0
+        return
     }
     
     New-Item -ItemType Directory -Force -Path $OnnxLibDir | Out-Null
@@ -1264,7 +1368,7 @@ function Invoke-InstallOnnxRuntime {
     
         if (-not $ExtractedDir) {
             Write-Host "Error: Could not find extracted ONNX Runtime directory." -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         Copy-Item -Path "$($ExtractedDir.FullName)\lib\*" -Destination $OnnxLibDir -Recurse -Force
@@ -1283,7 +1387,7 @@ function Invoke-InstallOnnxRuntime {
             Write-Host "  $LibName`: OK ($libSize MB)" -ForegroundColor Green
         } else {
             Write-Host "  $LibName`: FAILED" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         Write-Host ""
@@ -1310,18 +1414,10 @@ function Invoke-InstallModels {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$System,
-        [switch]$SkipDETR,
-        [switch]$SkipNemotron,
-        [switch]$KeepVenv,
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria ML Models Installation Script"
@@ -1335,7 +1431,11 @@ function Invoke-InstallModels {
         Write-Host "  -SkipNemotron     Skip Nemotron model installation"
         Write-Host "  -KeepVenv         Keep Python virtual environment after installation"
         Write-Host "  -Help             Show this help message"
-        exit 0
+        return
+    }
+    
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
     }
     
     Write-Host "========================================" -ForegroundColor Blue
@@ -1343,7 +1443,6 @@ function Invoke-InstallModels {
     Write-Host "========================================" -ForegroundColor Blue
     Write-Host ""
     
-    $RepoDir   = Split-Path -Parent $ScriptDir
     
     $ModelsDir        = "$InstallDir\models"
     $DETRModelPath    = "$ModelsDir\detr_layout_detection.onnx"
@@ -1394,12 +1493,12 @@ function Invoke-InstallModels {
     
         if (-not $PythonCmd -or -not (Get-Command $PythonCmd -ErrorAction SilentlyContinue)) {
             Write-Host "Error: Python 3.12 setup failed." -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
             Write-Host "Error: Git not found. Please install Git." -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
         $GitVersion = (git --version) -replace 'git version ', ''
         Write-Host "Git: $GitVersion" -ForegroundColor Green
@@ -1411,7 +1510,7 @@ function Invoke-InstallModels {
             } catch {
                 Write-Host "Error: Git LFS not found." -ForegroundColor Red
                 Write-Host "Install from https://git-lfs.github.com/ then run: git lfs install"
-                exit 1
+                throw "Installation step failed"
             }
         }
     
@@ -1442,7 +1541,7 @@ function Invoke-InstallModels {
                     $DETRExportScript = Join-Path $RepoDir "models\export_detr_layout_onnx.py"
                     if (-not (Test-Path $DETRExportScript)) {
                         Write-Host "Error: $DETRExportScript not found." -ForegroundColor Red
-                        exit 1
+                        throw "Installation step failed"
                     }
                     Push-Location $WorkDir
                     & python $DETRExportScript --output $DETRModelPath
@@ -1450,7 +1549,7 @@ function Invoke-InstallModels {
     
                     if (-not (Test-Path $DETRModelPath)) {
                         Write-Host "Error: DETR ONNX not produced." -ForegroundColor Red
-                        exit 1
+                        throw "Installation step failed"
                     }
                     $sz = [math]::Round((Get-Item $DETRModelPath).Length / 1MB, 1)
                     Write-Host "  DETR installed: $DETRModelPath ($sz MB)" -ForegroundColor Green
@@ -1482,14 +1581,14 @@ function Invoke-InstallModels {
                     $NemotronExportScript = Join-Path $RepoDir "models\export_nemotron_onnx.py"
                     if (-not (Test-Path $NemotronExportScript)) {
                         Write-Host "Error: $NemotronExportScript not found." -ForegroundColor Red
-                        exit 1
+                        throw "Installation step failed"
                     }
                     & python $NemotronExportScript --output $NemotronModelPath
                     Pop-Location
     
                     if (-not (Test-Path $NemotronModelPath)) {
                         Write-Host "Error: Nemotron ONNX not produced." -ForegroundColor Red
-                        exit 1
+                        throw "Installation step failed"
                     }
                     $sz = [math]::Round((Get-Item $NemotronModelPath).Length / 1MB, 1)
                     Write-Host "  Nemotron installed: $NemotronModelPath ($sz MB)" -ForegroundColor Green
@@ -1543,7 +1642,7 @@ function Invoke-InstallModels {
         }
     }
     
-    if (-not $allOk) { exit 1 }
+    if (-not $allOk) { throw "Installation step failed" }
     
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
@@ -1564,14 +1663,14 @@ function Invoke-InstallSLM {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
     
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Help
-    )
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
     
     # Configuration
     $LlamaCppVersion = "b4549"
@@ -1586,7 +1685,7 @@ function Invoke-InstallSLM {
         Write-Host "Options:"
         Write-Host "  -InstallDir DIR  Install to DIR (default: $env:USERPROFILE\.faria)"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
     Write-Host "========================================" -ForegroundColor Blue
@@ -1611,7 +1710,7 @@ function Invoke-InstallSLM {
         }
         default {
             Write-Host "Unsupported architecture: $Arch" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     }
     
@@ -1652,7 +1751,7 @@ function Invoke-InstallSLM {
     
         if (-not $LlamaCli) {
             Write-Host "Error: llama-cli.exe not found in archive" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         Copy-Item -Path $LlamaCli.FullName -Destination "$InstallDir\bin\llama-cli.exe" -Force
@@ -1681,7 +1780,7 @@ function Invoke-InstallSLM {
             Write-Host "  llama-cli: OK" -ForegroundColor Green
         } else {
             Write-Host "  llama-cli: FAILED" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         if (Test-Path $ModelPath) {
@@ -1689,7 +1788,7 @@ function Invoke-InstallSLM {
             Write-Host "  Model: OK ($([math]::Round($ModelSize, 1)) MB)" -ForegroundColor Green
         } else {
             Write-Host "  Model: FAILED" -ForegroundColor Red
-            exit 1
+            throw "Installation step failed"
         }
     
         # Print success message and instructions
@@ -1739,14 +1838,10 @@ function Invoke-Verify {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria Installation Verification Script"
@@ -1756,7 +1851,7 @@ function Invoke-Verify {
         Write-Host "Options:"
         Write-Host "  -InstallDir DIR  Check installation in DIR (default: $env:USERPROFILE\.faria)"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
     Write-Host "========================================" -ForegroundColor Blue
@@ -1860,8 +1955,8 @@ function Invoke-Verify {
     $OpenCVFound = $false
     $OpenCVPath = ""
     
-    # Check in install directory
-    $OpenCVDll = Get-ChildItem -Path "$OpenCVDir" -Recurse -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Check in install directory — MinGW builds produce libopencv_core*.dll (not opencv_world*.dll)
+    $OpenCVDll = Get-ChildItem -Path "$OpenCVDir" -Recurse -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($OpenCVDll) {
         $OpenCVFound = $true
         $OpenCVPath = $OpenCVDll.FullName
@@ -1869,7 +1964,7 @@ function Invoke-Verify {
     
     # Check via environment variable
     if (-not $OpenCVFound -and $env:OPENCV_DIR) {
-        $OpenCVDll = Get-ChildItem -Path "$env:OPENCV_DIR" -Recurse -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $OpenCVDll = Get-ChildItem -Path "$env:OPENCV_DIR" -Recurse -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($OpenCVDll) {
             $OpenCVFound = $true
             $OpenCVPath = $OpenCVDll.FullName
@@ -1998,7 +2093,7 @@ function Invoke-Verify {
         Write-Host "Run the installation scripts to install missing components:"
         Write-Host "  .\install.ps1 -Features idp"
         Write-Host ""
-        exit 1
+        throw "Installation step failed"
     }
     Write-Host ""
 }
@@ -2010,17 +2105,10 @@ function Invoke-InstallIDP {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$GPU,
-        [switch]$WithLLM,
-        [switch]$System,
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria IDP Installation Script"
@@ -2033,9 +2121,13 @@ function Invoke-InstallIDP {
         Write-Host "  -WithLLM         Install LLM support for advanced document understanding"
         Write-Host "  -System          Download pre-exported ONNX models from HuggingFace (skip Python)"
         Write-Host "  -Help            Show this help message"
-        exit 0
+        return
     }
     
+    
+    if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot '_common.ps1')
+    }
     
     Write-Host "=================================================================" -ForegroundColor Cyan
     Write-Host "   Faria IDP Dependencies Installation" -ForegroundColor Blue
@@ -2049,30 +2141,23 @@ function Invoke-InstallIDP {
     if ($WithLLM) { $TotalSteps++ }
     $script:CurrentStep = 0
     
-    function Invoke-Step {
-        param(
-            [string]$StepName,
-            [string]$Script,
-            [hashtable]$Arguments = @{}
-        )
+    # Step runner: increments counter, prints header, executes scriptblock, catches failures.
+    # Uses a scriptblock so the build system can transform the direct $ScriptDir\*.ps1 calls
+    # inside each block into the corresponding inlined Invoke-* function calls.
+    function Invoke-IDPStep {
+        param([string]$Name, [scriptblock]$Action)
         $script:CurrentStep++
         Write-Host ""
         Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
-        Write-Host "  Step $($script:CurrentStep)/$TotalSteps`: $StepName" -ForegroundColor Blue
+        Write-Host "  Step $($script:CurrentStep)/$TotalSteps`: $Name" -ForegroundColor Blue
         Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
         Write-Host ""
         try {
-            if ($Arguments.Count -gt 0) {
-                & "$ScriptDir\$Script" @Arguments
-            } else {
-                & "$ScriptDir\$Script"
-            }
-            if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
-                throw "Script returned exit code $LASTEXITCODE"
-            }
-            Write-Host "[OK] $StepName completed successfully" -ForegroundColor Green
+            $global:LASTEXITCODE = 0  # prevent stale exit codes from previous steps leaking in
+            & $Action
+            Write-Host "[OK] $Name completed successfully" -ForegroundColor Green
         } catch {
-            Write-Host "[X] $StepName failed: $_" -ForegroundColor Red
+            Write-Host "[X] $Name failed: $_" -ForegroundColor Red
             $script:InstallFailed = $true
         }
     }
@@ -2080,51 +2165,63 @@ function Invoke-InstallIDP {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     
     # Step 0: Toolchain (MSYS2 + MinGW-w64 + pkg-config) — must come first
-    Invoke-Step -StepName "Setting up MinGW-w64 toolchain" `
-                -Script "setup-toolchain.ps1" `
-                -Arguments @{ InstallDir = $InstallDir }
+    Invoke-IDPStep -Name "Setting up MinGW-w64 toolchain" -Action {
+        & "Invoke-SetupToolchain" -InstallDir $InstallDir
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
     
     # Step 1: OpenCV
-    Invoke-Step -StepName "Installing OpenCV" `
-                -Script "install-opencv.ps1" `
-                -Arguments @{ InstallDir = $InstallDir }
+    Invoke-IDPStep -Name "Installing OpenCV" -Action {
+        & "Invoke-InstallOpenCV" -InstallDir $InstallDir
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
     
     # Step 2: Tesseract (includes Leptonica)
-    Invoke-Step -StepName "Installing Tesseract OCR" `
-                -Script "install-tesseract.ps1" `
-                -Arguments @{ InstallDir = $InstallDir }
+    Invoke-IDPStep -Name "Installing Tesseract OCR" -Action {
+        & "Invoke-InstallTesseract" -InstallDir $InstallDir
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
     
     # Step 3: MuPDF
-    Invoke-Step -StepName "Installing MuPDF" `
-                -Script "install-mupdf.ps1" `
-                -Arguments @{ InstallDir = $InstallDir }
+    Invoke-IDPStep -Name "Installing MuPDF" -Action {
+        & "Invoke-InstallMuPDF" -InstallDir $InstallDir
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
     
     # Step 4: ONNX Runtime
-    $OnnxArgs = @{ InstallDir = $InstallDir }
-    if ($GPU) { $OnnxArgs.GPU = $true }
-    Invoke-Step -StepName "Installing ONNX Runtime" `
-                -Script "install-onnxruntime.ps1" `
-                -Arguments $OnnxArgs
+    Invoke-IDPStep -Name "Installing ONNX Runtime" -Action {
+        $onnxArgs = @{ InstallDir = $InstallDir }
+        if ($GPU) { $onnxArgs.GPU = $true }
+        & "Invoke-InstallOnnxRuntime" @onnxArgs
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
     
     # Step 5: ML Models (DETR + Nemotron + CLIP)
-    $ModelArgs = @{ InstallDir = $InstallDir }
-    if ($System) { $ModelArgs.System = $true }
-    Invoke-Step -StepName "Installing ML Models" `
-                -Script "install-models.ps1" `
-                -Arguments $ModelArgs
+    Invoke-IDPStep -Name "Installing ML Models" -Action {
+        $modelArgs = @{ InstallDir = $InstallDir }
+        if ($System) { $modelArgs.System = $true }
+        & "Invoke-InstallModels" @modelArgs
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+    }
     
     # Step 6 (optional): LLM for IDP
     if ($WithLLM) {
-        Invoke-Step -StepName "Installing LLM for IDP" `
-                    -Script "install-slm.ps1" `
-                    -Arguments @{ InstallDir = $InstallDir }
+        Invoke-IDPStep -Name "Installing LLM for IDP" -Action {
+            & "Invoke-InstallSLM" -InstallDir $InstallDir
+            if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
+        }
     }
     
     # ── Set CGO env vars ──────────────────────────────────────────────────────────
     Write-Host ""
     Write-Host "Setting CGO environment variables..." -ForegroundColor Yellow
     
-    $opencvInc  = "$InstallDir/lib/opencv/include"
+    # Windows tarballs use include/opencv2/; detect which layout is present
+    $opencvInc = if (Test-Path "$InstallDir\lib\opencv\include\opencv4") {
+        "$InstallDir/lib/opencv/include/opencv4"
+    } else {
+        "$InstallDir/lib/opencv/include"
+    }
     $opencvLib  = "$InstallDir/lib/opencv/lib"
     $mupdfInc   = "$InstallDir/lib/mupdf/include"
     $mupdfLib   = "$InstallDir/lib/mupdf/lib"
@@ -2167,7 +2264,7 @@ function Invoke-InstallIDP {
     }
     Write-Host ""
     
-    if ($script:InstallFailed) { exit 1 }
+    if ($script:InstallFailed) { throw "Installation step failed" }
 }
 
 # ============================================================================
@@ -2177,14 +2274,10 @@ function Invoke-InstallChat {
     param(
         [string]$InstallDir = "$env:USERPROFILE\.faria",
         [switch]$GPU,
-        [switch]$WithLLM
+        [switch]$WithLLM,
+        [switch]$System
     )
 
-    
-    param(
-        [string]$InstallDir = "$env:USERPROFILE\.faria",
-        [switch]$Help
-    )
     
     if ($Help) {
         Write-Host "Faria Chat Installation Script"
@@ -2198,7 +2291,7 @@ function Invoke-InstallChat {
         Write-Host "This script installs dependencies for the Chat feature:"
         Write-Host "  - llama.cpp        LLM inference engine (~5 MB)"
         Write-Host "  - Qwen 2.5-0.5B    Language model (~530 MB)"
-        exit 0
+        return
     }
     
     # Get script directory
@@ -2250,7 +2343,7 @@ function Invoke-InstallChat {
     Write-Host ""
     
     if ($InstallFailed) {
-        exit 1
+        throw "Installation step failed"
     }
 }
 

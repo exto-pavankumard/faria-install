@@ -122,8 +122,8 @@ $OpenCVDir = "$InstallDir\lib\opencv"
 $OpenCVFound = $false
 $OpenCVPath = ""
 
-# Check in install directory
-$OpenCVDll = Get-ChildItem -Path "$OpenCVDir" -Recurse -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+# Check in install directory — MinGW builds produce libopencv_core*.dll (not opencv_world*.dll)
+$OpenCVDll = Get-ChildItem -Path "$OpenCVDir" -Recurse -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($OpenCVDll) {
     $OpenCVFound = $true
     $OpenCVPath = $OpenCVDll.FullName
@@ -131,7 +131,7 @@ if ($OpenCVDll) {
 
 # Check via environment variable
 if (-not $OpenCVFound -and $env:OPENCV_DIR) {
-    $OpenCVDll = Get-ChildItem -Path "$env:OPENCV_DIR" -Recurse -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $OpenCVDll = Get-ChildItem -Path "$env:OPENCV_DIR" -Recurse -Filter "libopencv_core*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($OpenCVDll) {
         $OpenCVFound = $true
         $OpenCVPath = $OpenCVDll.FullName

@@ -23,8 +23,12 @@ if ($Help) {
     exit 0
 }
 
-$MinGWBin = "C:\msys64\mingw64\bin"
-$PkgConfigDir = "C:\msys64\mingw64\lib\pkgconfig"
+$MinGWBin = "C:\msys64\mingw64\bin"        # used only in the pacman-install fallback path
+$PkgConfigDir = "C:\msys64\mingw64\lib\pkgconfig"  # overridden dynamically when MSYS2 is on PATH
+
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
 
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host "  Faria Toolchain Setup (MinGW-w64)" -ForegroundColor Blue
@@ -35,17 +39,19 @@ Write-Host ""
 $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
 if ($gccCmd) {
     $gccVer = (& gcc --version 2>&1 | Select-Object -First 1)
-    if ($gccVer -match "mingw") {
-        Write-Host "MinGW-w64 gcc already available: $gccVer" -ForegroundColor Green
+    if ($gccVer -match "mingw|msys2|MSYS2") {
+        Write-Host "MinGW-w64/MSYS2 gcc already available: $gccVer" -ForegroundColor Green
         Write-Host ""
 
-        # Ensure PKG_CONFIG_PATH is set for MSYS2
+        # Resolve the actual pkgconfig dir for this MSYS2 installation (may not be C:\msys64)
+        $PkgConfigDir = Get-MSYS2PkgConfigDir
         New-Item -ItemType Directory -Force -Path $PkgConfigDir | Out-Null
         $existingPcp = [Environment]::GetEnvironmentVariable("PKG_CONFIG_PATH", "User")
         if (-not ($existingPcp -split ";" | Where-Object { $_ -eq $PkgConfigDir })) {
             $newPcp = if ($existingPcp) { "$existingPcp;$PkgConfigDir" } else { $PkgConfigDir }
             [Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", $newPcp, "User")
             $env:PKG_CONFIG_PATH = $newPcp
+            Write-Host "Set PKG_CONFIG_PATH to include $PkgConfigDir." -ForegroundColor Green
         }
         exit 0
     }

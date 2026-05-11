@@ -27,11 +27,18 @@ if ($Help) {
 $MuPDFVersion  = "1.24.9"
 $MuPDFDir      = "$InstallDir\lib\mupdf"
 $BinDir        = "$InstallDir\bin"
-$PkgConfigDir  = "C:\msys64\mingw64\lib\pkgconfig"
 
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
+
+$PkgConfigDir = Get-MSYS2PkgConfigDir
+
+# Override FARIA_RELEASE_REPO env var to download from a fork (e.g. for CI on a fork).
+$ReleaseRepo   = if ($env:FARIA_RELEASE_REPO) { $env:FARIA_RELEASE_REPO } else { "exto360-inc/faria-install" }
 $MuPDFAsset    = "mupdf-$MuPDFVersion-windows-dev-x86_64.zip"
-$MuPDFUrl      = "https://github.com/exto360-inc/faria-install/releases/download/mupdf-$MuPDFVersion/$MuPDFAsset"
-$ChecksumsUrl  = "https://github.com/exto360-inc/faria-install/releases/download/mupdf-$MuPDFVersion/checksums.txt"
+$MuPDFUrl      = "https://github.com/$ReleaseRepo/releases/download/mupdf-$MuPDFVersion/$MuPDFAsset"
+$ChecksumsUrl  = "https://github.com/$ReleaseRepo/releases/download/mupdf-$MuPDFVersion/checksums.txt"
 
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host "  Faria MuPDF Installation" -ForegroundColor Blue
@@ -84,17 +91,10 @@ try {
     Write-Host ""
 
     # ── Extract ───────────────────────────────────────────────────────────────
+    # The zip is flat: include/, lib/, bin/ at root (no top-level wrapper dir).
     Write-Host "Extracting MuPDF..." -ForegroundColor Yellow
-    $ExtractDir = Join-Path $TempDir "mupdf-extract"
-    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-
     if (Test-Path $MuPDFDir) { Remove-Item -Recurse -Force $MuPDFDir }
-    $inner = Get-ChildItem -Path $ExtractDir -Directory | Select-Object -First 1
-    if ($inner) {
-        Move-Item -Path $inner.FullName -Destination $MuPDFDir -Force
-    } else {
-        Move-Item -Path $ExtractDir -Destination $MuPDFDir -Force
-    }
+    Expand-Archive -Path $ZipPath -DestinationPath $MuPDFDir -Force
     Write-Host "  Extracted to: $MuPDFDir" -ForegroundColor Green
 
     # Copy mutool.exe to bin/
@@ -142,6 +142,7 @@ try {
         } else {
             Write-Host "  pkg-config --exists mupdf: FAILED (may need new shell session)" -ForegroundColor Yellow
         }
+        $global:LASTEXITCODE = 0  # informational check — never fail the install step
     }
 
     Write-Host ""

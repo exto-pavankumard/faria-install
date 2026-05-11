@@ -11,6 +11,10 @@ param(
     [switch]$Help
 )
 
+if (-not (Get-Command 'Set-UserEnv' -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '_common.ps1')
+}
+
 if ($Help) {
     Write-Host "Faria OpenCV Installation Script"
     Write-Host ""
@@ -25,12 +29,14 @@ if ($Help) {
 
 $OpenCVVersion = "4.12.0"
 $OpenCVDir     = "$InstallDir\lib\opencv"
-$PkgConfigDir  = "C:\msys64\mingw64\lib\pkgconfig"
+$PkgConfigDir  = Get-MSYS2PkgConfigDir
 
-# Asset hosted in faria-install GitHub Releases
+# Asset hosted in faria-install GitHub Releases.
+# Override FARIA_RELEASE_REPO env var to download from a fork (e.g. for CI on a fork).
+$ReleaseRepo   = if ($env:FARIA_RELEASE_REPO) { $env:FARIA_RELEASE_REPO } else { "exto360-inc/faria-install" }
 $OpenCVAsset   = "opencv-$OpenCVVersion-windows-x86_64.zip"
-$OpenCVUrl     = "https://github.com/exto360-inc/faria-install/releases/download/opencv-$OpenCVVersion/$OpenCVAsset"
-$ChecksumsUrl  = "https://github.com/exto360-inc/faria-install/releases/download/opencv-$OpenCVVersion/checksums.txt"
+$OpenCVUrl     = "https://github.com/$ReleaseRepo/releases/download/opencv-$OpenCVVersion/$OpenCVAsset"
+$ChecksumsUrl  = "https://github.com/$ReleaseRepo/releases/download/opencv-$OpenCVVersion/checksums.txt"
 
 Write-Host "========================================" -ForegroundColor Blue
 Write-Host "  Faria OpenCV Installation" -ForegroundColor Blue
@@ -134,6 +140,7 @@ try {
         } else {
             Write-Host "  pkg-config --exists opencv4: FAILED (may need new shell session)" -ForegroundColor Yellow
         }
+        $global:LASTEXITCODE = 0  # informational check — never fail the install step
     }
 
     Write-Host ""

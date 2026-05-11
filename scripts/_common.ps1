@@ -206,6 +206,23 @@ function Invoke-ChecksumVerify {
 }
 
 # ============================================================================
+# MSYS2 PATH DETECTION
+# ============================================================================
+
+# Return the MinGW64 pkgconfig directory for whichever MSYS2 installation is
+# active. setup-msys2@v2 may install to a non-default location (e.g. D:\a\_temp\msys64)
+# instead of C:\msys64. Resolving via the pkgconf/pkg-config binary on PATH
+# (which setup-msys2 adds) gives the canonical location.
+function Get-MSYS2PkgConfigDir {
+    $pkgCmd = Get-Command pkgconf -ErrorAction SilentlyContinue
+    if (-not $pkgCmd) { $pkgCmd = Get-Command pkg-config -ErrorAction SilentlyContinue }
+    if ($pkgCmd) {
+        return Join-Path (Split-Path -Parent (Split-Path -Parent $pkgCmd.Source)) "lib\pkgconfig"
+    }
+    return "C:\msys64\mingw64\lib\pkgconfig"  # fallback for machines without MSYS2 on PATH
+}
+
+# ============================================================================
 # BITS DOWNLOAD WRAPPER
 # ============================================================================
 

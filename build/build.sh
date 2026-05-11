@@ -247,62 +247,67 @@ convert_ps1_script_to_function() {
     echo "    param("
     echo "        [string]\$InstallDir = \"\$env:USERPROFILE\\.faria\","
     echo "        [switch]\$GPU,"
-    echo "        [switch]\$WithLLM"
+    echo "        [switch]\$WithLLM,"
+    echo "        [switch]\$System"
     echo "    )"
     echo ""
 
-    # Process with sed - skip param block and transform
-    # First, extract content after param block
-    local in_content=false
+    local in_content="false"
     local paren_depth=0
 
-    tail -n +1 "${script_path}" | while IFS= read -r line || [ -n "$line" ]; do
-        # Skip leading comments
-        if [ "$in_content" = false ] && [[ "$line" =~ ^[[:space:]]*# ]]; then
+    # Use process substitution (< <(...)) so the while loop runs in the current
+    # shell rather than a subshell — this is critical for in_content / paren_depth
+    # to persist across iterations and correctly strip the source param() block.
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip leading comments and blank lines before content begins
+        if [ "$in_content" = "false" ] && [[ "$line" =~ ^[[:space:]]*# ]]; then
+            continue
+        fi
+        if [ "$in_content" = "false" ] && [[ "$line" =~ ^[[:space:]]*$ ]]; then
             continue
         fi
 
-        # Track param block
-        if [ "$in_content" = false ] && [[ "$line" =~ ^[[:space:]]*param\( ]]; then
+        # Detect source param() block and skip it; we provide our own above
+        if [ "$in_content" = "false" ] && [[ "$line" =~ ^[[:space:]]*param[[:space:]]*\( ]]; then
             in_content="skipping_param"
             paren_depth=1
             continue
         fi
 
         if [ "$in_content" = "skipping_param" ]; then
-            # Count parentheses
-            local opens=$(echo "$line" | tr -cd '(' | wc -c | tr -d ' ')
-            local closes=$(echo "$line" | tr -cd ')' | wc -c | tr -d ' ')
+            local opens closes
+            opens=$(printf '%s' "$line" | tr -cd '(' | wc -c | tr -d ' ')
+            closes=$(printf '%s' "$line" | tr -cd ')' | wc -c | tr -d ' ')
             paren_depth=$((paren_depth + opens - closes))
-            if [ "$paren_depth" -le 0 ]; then
-                in_content=true
-            fi
+            [ "$paren_depth" -le 0 ] && in_content="true"
             continue
         fi
 
-        if [ "$in_content" = false ]; then
-            in_content=true
-        fi
+        [ "$in_content" = "false" ] && in_content="true"
 
-        # Skip ScriptDir calculations
-        [[ "$line" =~ ^\$ScriptDir ]] && continue
+        # Strip path variable assignments resolved by the build system
+        [[ "$line" =~ ^\$ScriptDir[[:space:]]*= ]] && continue
+        [[ "$line" =~ ^\$RepoDir[[:space:]]*= ]] && continue
 
-        # Transform script calls
-        line=$(echo "$line" | sed 's|\$ScriptDir\\setup-toolchain\.ps1|Invoke-SetupToolchain|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\install-opencv\.ps1|Invoke-InstallOpenCV|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\install-tesseract\.ps1|Invoke-InstallTesseract|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\install-mupdf\.ps1|Invoke-InstallMuPDF|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\install-onnxruntime\.ps1|Invoke-InstallOnnxRuntime|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\install-models\.ps1|Invoke-InstallModels|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\install-slm\.ps1|Invoke-InstallSLM|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\scripts\\install-idp\.ps1|Invoke-InstallIDP|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\scripts\\install-chat\.ps1|Invoke-InstallChat|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\scripts\\verify\.ps1|Invoke-Verify|g')
-        line=$(echo "$line" | sed 's|\$ScriptDir\\setup-python\.ps1|Initialize-Python|g')
+        # Replace sub-script file references with the inlined function calls
+        line=$(echo "$line" | sed \
+            -e 's|\$ScriptDir\\setup-toolchain\.ps1|Invoke-SetupToolchain|g' \
+            -e 's|\$ScriptDir\\install-opencv\.ps1|Invoke-InstallOpenCV|g' \
+            -e 's|\$ScriptDir\\install-tesseract\.ps1|Invoke-InstallTesseract|g' \
+            -e 's|\$ScriptDir\\install-mupdf\.ps1|Invoke-InstallMuPDF|g' \
+            -e 's|\$ScriptDir\\install-onnxruntime\.ps1|Invoke-InstallOnnxRuntime|g' \
+            -e 's|\$ScriptDir\\install-models\.ps1|Invoke-InstallModels|g' \
+            -e 's|\$ScriptDir\\install-slm\.ps1|Invoke-InstallSLM|g' \
+            -e 's|\$ScriptDir\\setup-python\.ps1|Initialize-Python|g')
 
-        # Indent
+        # Replace exit with function-safe equivalents so they don't kill the
+        # whole script when the function is inlined in dist/install.ps1.
+        # Global replacement handles both standalone lines and inline { exit 1 } forms.
+        line=$(echo "$line" | sed 's/exit 0/return/g')
+        line=$(echo "$line" | sed 's/exit 1/throw "Installation step failed"/g')
+
         echo "    $line"
-    done
+    done < <(tail -n +1 "${script_path}")
 
     echo "}"
 }
