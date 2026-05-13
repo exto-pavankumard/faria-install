@@ -79,7 +79,8 @@ jobs:
             -DBUILD_SHARED_LIBS=ON \
             -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENGL=OFF \
             -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF \
-            -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON
+            -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON \
+            -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF
           ${{ matrix.make_cmd }} -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
           ${{ matrix.make_cmd }} install
 
@@ -101,7 +102,8 @@ jobs:
             -DBUILD_SHARED_LIBS=ON \
             -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENGL=OFF \
             -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF \
-            -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON
+            -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON \
+            -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF
           mingw32-make -j$(nproc)
           mingw32-make install
 
