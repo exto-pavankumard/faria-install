@@ -1,7 +1,9 @@
 #!/bin/bash
 #
 # Faria OpenCV Installation Script
-# Downloads pre-built OpenCV binaries from GitHub Releases
+# Tries to download pre-built binaries from GitHub Releases first.
+# Falls back to building from source if the download fails or the
+# binary cannot be verified.
 #
 # Usage: ./install-opencv.sh [OPTIONS]
 #
@@ -54,7 +56,6 @@ echo -e "${BLUE}  Faria OpenCV Installation${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Detect OS and architecture
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -62,32 +63,8 @@ echo -e "${YELLOW}Detecting system...${NC}"
 echo "  OS: ${OS}"
 echo "  Architecture: ${ARCH}"
 
-# Determine asset name based on platform
 case "${OS}" in
-    Darwin)
-        case "${ARCH}" in
-            arm64)
-                OPENCV_ASSET="opencv-${OPENCV_VERSION}-macos-arm64.zip"
-                ;;
-            *)
-                echo -e "${RED}Error: Only macOS arm64 has a pre-built OpenCV tarball.${NC}"
-                echo "  For macOS x86_64, install OpenCV via Homebrew:"
-                echo "    brew install opencv"
-                exit 1
-                ;;
-        esac
-        ;;
-    Linux)
-        case "${ARCH}" in
-            x86_64)
-                OPENCV_ASSET="opencv-${OPENCV_VERSION}-linux-x86_64.zip"
-                ;;
-            *)
-                echo -e "${RED}Error: Only Linux x86_64 has a pre-built OpenCV tarball.${NC}"
-                exit 1
-                ;;
-        esac
-        ;;
+    Darwin|Linux) ;;
     *)
         echo -e "${RED}Unsupported OS: ${OS}${NC}"
         echo "For Windows, please use install-opencv.ps1"
@@ -95,8 +72,14 @@ case "${OS}" in
         ;;
 esac
 
-# Asset hosted in faria-install GitHub Releases.
-# Override FARIA_RELEASE_REPO to download from a fork (e.g. for CI on a fork).
+# Pick release asset; leave empty when no pre-built exists for this platform.
+# An empty OPENCV_ASSET causes _try_release to skip straight to fallback.
+case "${OS}-${ARCH}" in
+    Linux-x86_64)  OPENCV_ASSET="opencv-${OPENCV_VERSION}-linux-x86_64.zip" ;;
+    Darwin-arm64)  OPENCV_ASSET="opencv-${OPENCV_VERSION}-macos-arm64.zip"  ;;
+    *)             OPENCV_ASSET=""  ;;
+esac
+
 RELEASE_REPO="${FARIA_RELEASE_REPO:-exto360-inc/faria-install}"
 OPENCV_DIR="${INSTALL_DIR}/lib/opencv"
 OPENCV_URL="https://github.com/${RELEASE_REPO}/releases/download/opencv-${OPENCV_VERSION}/${OPENCV_ASSET}"
@@ -105,14 +88,19 @@ CHECKSUMS_URL="https://github.com/${RELEASE_REPO}/releases/download/opencv-${OPE
 echo ""
 echo -e "${YELLOW}Installation configuration:${NC}"
 echo "  Install directory: ${OPENCV_DIR}"
-echo "  OpenCV version: ${OPENCV_VERSION}"
-echo "  Asset: ${OPENCV_ASSET}"
+echo "  OpenCV version:    ${OPENCV_VERSION}"
 echo ""
 
-# Already installed?
-if [ -f "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc" ] && [ "${FORCE}" = false ]; then
-    echo -e "${GREEN}OpenCV ${OPENCV_VERSION} already installed at ${OPENCV_DIR}${NC}"
-    exit 0
+# Already installed? Also accept a system/brew install visible via pkg-config.
+if [ "${FORCE}" = false ]; then
+    if [ -f "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc" ]; then
+        echo -e "${GREEN}OpenCV ${OPENCV_VERSION} already installed at ${OPENCV_DIR}${NC}"
+        exit 0
+    elif pkg-config --exists opencv4 2>/dev/null; then
+        VER=$(pkg-config --modversion opencv4 2>/dev/null)
+        echo -e "${GREEN}OpenCV already available via pkg-config (v${VER}) — skipping installation.${NC}"
+        exit 0
+    fi
 fi
 
 mkdir -p "${OPENCV_DIR}"
@@ -120,98 +108,223 @@ mkdir -p "${OPENCV_DIR}"
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf '${TEMP_DIR}'" EXIT
 
-# Download
-echo -e "${YELLOW}Downloading OpenCV ${OPENCV_VERSION} pre-built tarball...${NC}"
-echo "  URL: ${OPENCV_URL}"
+# ============================================================================
+# _try_release: attempt pre-built download.
+#
+# NOTE: bash disables set -e for the entire body of a function called as the
+# condition of an `if` statement. Each critical step must use `|| return 1`
+# so that a failure causes the function to return non-zero for the caller.
+# ============================================================================
+_try_release() {
+    if [ -z "${OPENCV_ASSET}" ]; then
+        echo -e "${YELLOW}  No pre-built release for ${OS}/${ARCH} — will build from source.${NC}"
+        return 1
+    fi
 
-if command -v curl &> /dev/null; then
-    curl -fSL --progress-bar -o "${TEMP_DIR}/${OPENCV_ASSET}" "${OPENCV_URL}"
-elif command -v wget &> /dev/null; then
-    wget -q --show-progress -O "${TEMP_DIR}/${OPENCV_ASSET}" "${OPENCV_URL}"
-else
-    echo -e "${RED}Error: Neither curl nor wget found. Please install one.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}  Download complete.${NC}"
-echo ""
+    echo "  Asset: ${OPENCV_ASSET}"
+    echo ""
 
-# Verify checksum
-echo -e "${YELLOW}Verifying checksum...${NC}"
-if command -v curl &> /dev/null; then
-    curl -fsSL -o "${TEMP_DIR}/checksums.txt" "${CHECKSUMS_URL}" || true
-elif command -v wget &> /dev/null; then
-    wget -q -O "${TEMP_DIR}/checksums.txt" "${CHECKSUMS_URL}" || true
-fi
+    # --- Download ---
+    echo -e "${YELLOW}Downloading OpenCV ${OPENCV_VERSION} pre-built tarball...${NC}"
+    echo "  URL: ${OPENCV_URL}"
+    if command -v curl &>/dev/null; then
+        curl -fSL --progress-bar -o "${TEMP_DIR}/${OPENCV_ASSET}" "${OPENCV_URL}" || \
+            { echo -e "${YELLOW}  Download failed.${NC}"; return 1; }
+    elif command -v wget &>/dev/null; then
+        wget -q --show-progress -O "${TEMP_DIR}/${OPENCV_ASSET}" "${OPENCV_URL}" || \
+            { echo -e "${YELLOW}  Download failed.${NC}"; return 1; }
+    else
+        echo -e "${YELLOW}  Neither curl nor wget found.${NC}"; return 1
+    fi
 
-if [ -f "${TEMP_DIR}/checksums.txt" ]; then
-    EXPECTED_HASH=$(grep "${OPENCV_ASSET}" "${TEMP_DIR}/checksums.txt" | awk '{print $1}')
-    if [ -n "${EXPECTED_HASH}" ]; then
-        if command -v sha256sum &> /dev/null; then
-            ACTUAL_HASH=$(sha256sum "${TEMP_DIR}/${OPENCV_ASSET}" | awk '{print $1}')
-        elif command -v shasum &> /dev/null; then
-            ACTUAL_HASH=$(shasum -a 256 "${TEMP_DIR}/${OPENCV_ASSET}" | awk '{print $1}')
+    # Sanity-check: a valid pre-built zip should be at least 5 MB
+    local file_size
+    file_size=$(wc -c < "${TEMP_DIR}/${OPENCV_ASSET}" | tr -d ' ')
+    if [ "${file_size}" -lt 5242880 ]; then
+        echo -e "${YELLOW}  Downloaded file is only ${file_size} bytes — not a valid binary release.${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}  Download complete.${NC}"
+    echo ""
+
+    # --- Checksum ---
+    echo -e "${YELLOW}Verifying checksum...${NC}"
+    if command -v curl &>/dev/null; then
+        curl -fsSL -o "${TEMP_DIR}/checksums.txt" "${CHECKSUMS_URL}" 2>/dev/null || true
+    else
+        wget -q -O "${TEMP_DIR}/checksums.txt" "${CHECKSUMS_URL}" 2>/dev/null || true
+    fi
+    if [ -f "${TEMP_DIR}/checksums.txt" ]; then
+        local expected actual
+        expected=$(grep "${OPENCV_ASSET}" "${TEMP_DIR}/checksums.txt" | awk '{print $1}')
+        if [ -n "${expected}" ]; then
+            if command -v sha256sum &>/dev/null; then
+                actual=$(sha256sum "${TEMP_DIR}/${OPENCV_ASSET}" | awk '{print $1}')
+            elif command -v shasum &>/dev/null; then
+                actual=$(shasum -a 256 "${TEMP_DIR}/${OPENCV_ASSET}" | awk '{print $1}')
+            fi
+            if [ -n "${actual}" ] && [ "${actual}" != "${expected}" ]; then
+                echo -e "${YELLOW}  Checksum mismatch — release binary may be corrupt.${NC}"
+                return 1
+            fi
+            [ -n "${actual}" ] && echo -e "${GREEN}  Checksum OK.${NC}"
         else
-            ACTUAL_HASH=""
+            echo -e "${YELLOW}  No checksum entry for ${OPENCV_ASSET} — skipping verify.${NC}"
         fi
-        if [ -n "${ACTUAL_HASH}" ]; then
-            if [ "${ACTUAL_HASH}" = "${EXPECTED_HASH}" ]; then
-                echo -e "${GREEN}  Checksum OK.${NC}"
-            else
-                echo -e "${RED}  Checksum mismatch!${NC}"
-                echo "    Expected: ${EXPECTED_HASH}"
-                echo "    Got:      ${ACTUAL_HASH}"
+    fi
+    echo ""
+
+    # --- Extract ---
+    echo -e "${YELLOW}Extracting OpenCV...${NC}"
+    if ! command -v unzip &>/dev/null; then
+        echo -e "${YELLOW}  unzip not found — cannot use pre-built archive.${NC}"
+        return 1
+    fi
+    local extract_dir="${TEMP_DIR}/opencv-extract"
+    mkdir -p "${extract_dir}"
+    unzip -q "${TEMP_DIR}/${OPENCV_ASSET}" -d "${extract_dir}" || \
+        { echo -e "${YELLOW}  Extraction failed.${NC}"; return 1; }
+
+    local root_dirs root_files
+    root_dirs=$(find "${extract_dir}" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+    root_files=$(find "${extract_dir}" -maxdepth 1 -mindepth 1 -type f | wc -l | tr -d ' ')
+    if [ "${root_dirs}" -eq 1 ] && [ "${root_files}" -eq 0 ]; then
+        local wrapper
+        wrapper=$(find "${extract_dir}" -maxdepth 1 -mindepth 1 -type d | head -1)
+        rm -rf "${OPENCV_DIR}"
+        mv "${wrapper}" "${OPENCV_DIR}"
+    else
+        rm -rf "${OPENCV_DIR}"
+        mv "${extract_dir}" "${OPENCV_DIR}"
+    fi
+    echo -e "${GREEN}  Extracted to: ${OPENCV_DIR}${NC}"
+    echo ""
+
+    # Sanity-check: archive must contain opencv4.pc
+    if [ ! -f "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc" ]; then
+        echo -e "${YELLOW}  opencv4.pc missing from archive — binary may be incomplete.${NC}"
+        return 1
+    fi
+
+    # Fix prefix in opencv4.pc
+    echo -e "${YELLOW}Registering opencv4.pc with pkg-config...${NC}"
+    sed -i.bak "s|^prefix=.*|prefix=${OPENCV_DIR}|" "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc"
+    rm -f "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc.bak"
+    echo -e "${GREEN}  opencv4.pc prefix updated to ${OPENCV_DIR}.${NC}"
+    echo ""
+
+    return 0
+}
+
+# ============================================================================
+# _build_from_source: build OpenCV from source.
+# Called outside an `if` condition, so set -e applies normally.
+# ============================================================================
+_build_from_source() {
+    echo -e "${YELLOW}Building OpenCV ${OPENCV_VERSION} from source...${NC}"
+    echo ""
+
+    case "${OS}" in
+        Darwin)
+            if ! command -v brew &>/dev/null; then
+                echo -e "${RED}Error: Homebrew is not installed.${NC}"
+                echo "Install it from https://brew.sh then re-run this script."
                 exit 1
             fi
-        else
-            echo -e "${YELLOW}  Warning: no checksum tool found — skipping verify.${NC}"
-        fi
-    else
-        echo -e "${YELLOW}  Warning: no checksum entry found for ${OPENCV_ASSET} — skipping verify.${NC}"
-    fi
-fi
-echo ""
+            echo -e "${YELLOW}Installing via Homebrew (this may take several minutes)...${NC}"
+            brew install opencv
+            # Redirect OPENCV_DIR to the brew prefix so pkg-config resolution works
+            OPENCV_DIR="$(brew --prefix opencv)"
+            ;;
 
-# Extract
-echo -e "${YELLOW}Extracting OpenCV...${NC}"
-if ! command -v unzip &> /dev/null; then
-    echo -e "${RED}Error: unzip not found. Install it (e.g. sudo apt install unzip) and retry.${NC}"
-    exit 1
-fi
-EXTRACT_DIR="${TEMP_DIR}/opencv-extract"
-mkdir -p "${EXTRACT_DIR}"
-unzip -q "${TEMP_DIR}/${OPENCV_ASSET}" -d "${EXTRACT_DIR}"
+        Linux)
+            local distro=""
+            [ -f /etc/os-release ] && { . /etc/os-release; distro="${ID}"; }
+            echo "  Distribution: ${distro:-unknown}"
+            echo ""
 
-# Handle both flat and single-wrapper-dir zips
-ROOT_DIRS=$(find "${EXTRACT_DIR}" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
-ROOT_FILES=$(find "${EXTRACT_DIR}" -maxdepth 1 -mindepth 1 -type f | wc -l | tr -d ' ')
-if [ "${ROOT_DIRS}" -eq 1 ] && [ "${ROOT_FILES}" -eq 0 ]; then
-    WRAPPER=$(find "${EXTRACT_DIR}" -maxdepth 1 -mindepth 1 -type d | head -1)
-    rm -rf "${OPENCV_DIR}"
-    mv "${WRAPPER}" "${OPENCV_DIR}"
+            echo -e "${YELLOW}Installing build dependencies...${NC}"
+            case "${distro}" in
+                ubuntu|debian|linuxmint|pop)
+                    sudo apt-get update -q
+                    sudo apt-get install -y --no-install-recommends \
+                        build-essential cmake pkg-config unzip \
+                        libjpeg-dev libpng-dev libtiff-dev
+                    ;;
+                fedora|rhel|centos|rocky|almalinux)
+                    sudo dnf install -y gcc gcc-c++ cmake pkgconfig unzip \
+                        libjpeg-turbo-devel libpng-devel libtiff-devel
+                    ;;
+                arch|manjaro|endeavouros)
+                    sudo pacman -S --noconfirm base-devel cmake pkgconf unzip \
+                        libjpeg-turbo libpng libtiff
+                    ;;
+                opensuse*)
+                    sudo zypper install -y gcc gcc-c++ cmake pkg-config unzip \
+                        libjpeg62-devel libpng16-devel libtiff-devel
+                    ;;
+                *)
+                    echo -e "${YELLOW}  Unknown distro — skipping automatic dependency install.${NC}"
+                    echo "  Ensure cmake, gcc, and image codec dev libs are installed."
+                    ;;
+            esac
+            echo ""
+
+            # Download source
+            local src_url="https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz"
+            echo -e "${YELLOW}Downloading OpenCV ${OPENCV_VERSION} source...${NC}"
+            if command -v curl &>/dev/null; then
+                curl -fSL --progress-bar -o "${TEMP_DIR}/opencv.tar.gz" "${src_url}"
+            else
+                wget -q --show-progress -O "${TEMP_DIR}/opencv.tar.gz" "${src_url}"
+            fi
+            tar -xzf "${TEMP_DIR}/opencv.tar.gz" -C "${TEMP_DIR}"
+            echo ""
+
+            # Build and install to OPENCV_DIR (no sudo needed — user-space dir)
+            local jobs
+            jobs=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+            echo -e "${YELLOW}Building OpenCV ${OPENCV_VERSION} (${jobs} jobs — this may take 10-20 minutes)...${NC}"
+            cmake "${TEMP_DIR}/opencv-${OPENCV_VERSION}" \
+                -B "${TEMP_DIR}/opencv_build" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="${OPENCV_DIR}" \
+                -DOPENCV_GENERATE_PKGCONFIG=ON \
+                -DBUILD_LIST=core,imgproc,imgcodecs \
+                -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+                -DBUILD_SHARED_LIBS=ON \
+                -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON
+            cmake --build "${TEMP_DIR}/opencv_build" --parallel "${jobs}"
+            cmake --install "${TEMP_DIR}/opencv_build"
+            echo -e "${GREEN}  Source build complete.${NC}"
+            echo ""
+            ;;
+    esac
+}
+
+# ============================================================================
+# Main: try release, fall back to source on any failure
+# ============================================================================
+INSTALL_METHOD=""
+
+if _try_release; then
+    INSTALL_METHOD="pre-built release"
 else
-    rm -rf "${OPENCV_DIR}"
-    mv "${EXTRACT_DIR}" "${OPENCV_DIR}"
+    echo -e "${YELLOW}Pre-built release unavailable or failed — falling back to build from source.${NC}"
+    echo ""
+    _build_from_source
+    INSTALL_METHOD="source build"
 fi
-echo -e "${GREEN}  Extracted to: ${OPENCV_DIR}${NC}"
-echo ""
 
-# Fix prefix in opencv4.pc
-PC_FILE="${OPENCV_DIR}/lib/pkgconfig/opencv4.pc"
-if [ -f "${PC_FILE}" ]; then
-    echo -e "${YELLOW}Registering opencv4.pc with pkg-config...${NC}"
-    sed -i.bak "s|^prefix=.*|prefix=${OPENCV_DIR}|" "${PC_FILE}"
-    rm -f "${PC_FILE}.bak"
-    echo -e "${GREEN}  opencv4.pc prefix updated to ${OPENCV_DIR}.${NC}"
-else
-    echo -e "${YELLOW}  Warning: opencv4.pc not found — pkg-config path not registered.${NC}"
-fi
-echo ""
-
-# Export PKG_CONFIG_PATH for the current session
+# ============================================================================
+# PKG_CONFIG_PATH — resolve after potential OPENCV_DIR update (brew changes it)
+# ============================================================================
 PKG_CONFIG_DIR="${OPENCV_DIR}/lib/pkgconfig"
 export PKG_CONFIG_PATH="${PKG_CONFIG_DIR}:${PKG_CONFIG_PATH:-}"
 
-# Verify installation
+# ============================================================================
+# Verify
+# ============================================================================
 echo -e "${YELLOW}Verifying installation...${NC}"
 
 LIB_CHECK=""
@@ -239,6 +352,7 @@ echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Installed to: ${OPENCV_DIR}"
+echo "Method:       ${INSTALL_METHOD}"
 echo ""
 echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
 echo ""
