@@ -72,11 +72,14 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=./out \
             -DOPENCV_GENERATE_PKGCONFIG=ON \
-            -DBUILD_LIST=core,imgproc,imgcodecs \
+            -DBUILD_LIST=core,imgproc,imgcodecs,objdetect,features2d,photo,calib3d,video,videoio,dnn,highgui \
             -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON \
             -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON \
             -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF \
-            -DBUILD_SHARED_LIBS=ON
+            -DBUILD_SHARED_LIBS=ON \
+            -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENGL=OFF \
+            -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF \
+            -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON
           ${{ matrix.make_cmd }} -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
           ${{ matrix.make_cmd }} install
 
@@ -91,11 +94,14 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=./out \
             -DOPENCV_GENERATE_PKGCONFIG=ON \
             -DOPENCV_INSTALL_BINARIES_PREFIX="" \
-            -DBUILD_LIST=core,imgproc,imgcodecs \
+            -DBUILD_LIST=core,imgproc,imgcodecs,objdetect,features2d,photo,calib3d,video,videoio,dnn,highgui \
             -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON \
             -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON \
             -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF \
-            -DBUILD_SHARED_LIBS=ON
+            -DBUILD_SHARED_LIBS=ON \
+            -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENGL=OFF \
+            -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF \
+            -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON
           mingw32-make -j$(nproc)
           mingw32-make install
 
