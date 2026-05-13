@@ -14,7 +14,7 @@
 
 set -e
 
-# Build date: 2026-05-13T11:54:49Z
+# Build date: 2026-05-13T12:43:57Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 # ============================================================================
@@ -689,10 +689,13 @@ __install_opencv() {
                     -DCMAKE_BUILD_TYPE=Release \
                     -DCMAKE_INSTALL_PREFIX="${OPENCV_DIR}" \
                     -DOPENCV_GENERATE_PKGCONFIG=ON \
-                    -DBUILD_LIST=core,imgproc,imgcodecs \
+                    -DBUILD_LIST=core,imgproc,imgcodecs,objdetect,features2d,photo,calib3d,video,videoio,dnn,highgui \
                     -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
                     -DBUILD_SHARED_LIBS=ON \
-                    -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON
+                    -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON \
+                    -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENGL=OFF \
+                    -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF \
+                    -DWITH_IPP=OFF -DBUILD_PROTOBUF=ON -DWITH_PROTOBUF=ON
                 cmake --build "${TEMP_DIR}/opencv_build" --parallel "${jobs}"
                 cmake --install "${TEMP_DIR}/opencv_build"
                 echo -e "${GREEN}  Source build complete.${NC}"
