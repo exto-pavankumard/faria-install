@@ -165,7 +165,9 @@ run_step() {
 mkdir -p "${INSTALL_DIR}"
 
 # Step 1: Install OpenCV
-run_step "Installing OpenCV" "install-opencv.sh"
+run_step "Installing OpenCV" "install-opencv.sh" --install-dir "${INSTALL_DIR}"
+# Make opencv4.pc discoverable for subsequent CGO builds in this session
+export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/opencv/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 # Step 2: Install Tesseract (includes Leptonica)
 run_step "Installing Tesseract OCR" "install-tesseract.sh"

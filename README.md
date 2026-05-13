@@ -57,9 +57,11 @@ cd faria-install
 
 | Platform | IDP (CGO) | Chat |
 |---|---|---|
-| macOS | arm64, x86_64 | arm64, x86_64 |
-| Linux | x86_64, aarch64 | x86_64, aarch64 |
+| macOS | arm64 only¹ | arm64, x86_64 |
+| Linux | x86_64 only¹ | x86_64, aarch64 |
 | Windows | **x86_64 only** | x86_64, arm64 |
+
+> ¹ Pre-built OpenCV ships for Linux x86_64 and macOS arm64 only. macOS x86_64 (Intel) users can install OpenCV manually via `brew install opencv` and set `PKG_CONFIG_PATH` accordingly.
 
 ## Features
 
@@ -67,14 +69,14 @@ cd faria-install
 
 | Component | Size | Description |
 |---|---|---|
-| OpenCV | - | Image processing (system install) |
-| Tesseract OCR | 30 MB | Text extraction (system install) |
-| Leptonica | - | Image library (system install) |
-| MuPDF | - | PDF rendering (system install) |
-| ONNX Runtime | 50 MB | Model inference engine |
+| OpenCV 4.12.0 | ~25 MB | Image processing (pre-built; Linux x86_64 and macOS arm64) |
+| Tesseract OCR | ~30 MB | Text extraction (system package) |
+| Leptonica | - | Image library (bundled with Tesseract) |
+| MuPDF 1.24.9 | ~5 MB | PDF rendering (system package / static libs) |
+| ONNX Runtime | ~50 MB | Model inference engine |
 | CLIP Model | ~100 MB | Visual embedding (Qdrant/clip-ViT-B-32) |
-| DETR Model | 350 MB | Document layout detection |
-| Nemotron Model | 200 MB | Table structure recognition |
+| DETR Model | ~350 MB | Document layout detection |
+| Nemotron Model | ~200 MB | Table structure recognition |
 
 ### Chat - Conversational AI (~535 MB)
 
@@ -139,6 +141,10 @@ cd faria-install
 ├── bin/
 │   └── llama-cli                          # LLM inference (Chat feature)
 ├── lib/
+│   ├── opencv/
+│   │   ├── include/opencv4/               # Headers for CGO builds
+│   │   ├── lib/libopencv_core.{so,dylib}  # Core library
+│   │   └── lib/pkgconfig/opencv4.pc       # pkg-config descriptor
 │   └── onnxruntime/
 │       └── libonnxruntime.{dylib,so}      # ONNX Runtime library
 └── models/
@@ -147,6 +153,8 @@ cd faria-install
     ├── nemotron_table_structure.onnx      # Table structure (IDP)
     └── qwen2.5-0.5b-instruct-q8_0.gguf   # LLM model (Chat)
 ```
+
+> Add `export PKG_CONFIG_PATH="$HOME/.faria/lib/opencv/lib/pkgconfig:$PKG_CONFIG_PATH"` to your shell profile so `go build` can resolve OpenCV CGO flags automatically.
 
 **Windows** (`%USERPROFILE%\.faria\`):
 

@@ -77,10 +77,12 @@ cd faria-install
 
 | Platform | IDP (CGO) | Chat |
 |----------|-----------|------|
-| macOS | arm64, x86_64 | arm64, x86_64 |
-| Linux | x86_64, aarch64 | x86_64, aarch64 |
+| macOS | arm64 only¹ | arm64, x86_64 |
+| Linux | x86_64 only¹ | x86_64, aarch64 |
 | Windows | **x86_64 only** | x86_64, arm64 |
 
+> ¹ Pre-built OpenCV ships for Linux x86_64 and macOS arm64 only. macOS x86_64 (Intel) users can install OpenCV manually via `brew install opencv` and set `PKG_CONFIG_PATH` accordingly.
+>
 > **Windows IDP note:** CGO compilation requires MinGW-w64 pre-built libs, which are x86_64 only in this release. ARM64 Windows (Snapdragon) supports Chat but not IDP.
 
 ### Windows Prerequisites
@@ -109,10 +111,10 @@ Everything needed for document layout detection and table extraction.
 | Component | Size | Purpose |
 |-----------|------|---------|
 | MinGW-w64 toolchain | ~600 MB | CGO compilation (Windows only) |
-| OpenCV 4.12.0 | ~25 MB | Image processing |
-| Tesseract OCR 5.5.0 | ~30 MB | Text extraction |
+| OpenCV 4.12.0 | ~25 MB | Image processing (pre-built; Linux x86_64 + macOS arm64) |
+| Tesseract OCR 5.5.0 | ~30 MB | Text extraction (system package / MSYS2 on Windows) |
 | Leptonica | bundled | Image library (with Tesseract) |
-| MuPDF 1.24.9 | ~5 MB | PDF rendering (static libs) |
+| MuPDF 1.24.9 | ~5 MB | PDF rendering (system package / static libs on Windows) |
 | ONNX Runtime 1.22.0 | ~50 MB | Model inference engine |
 | CLIP Model | ~100 MB | Visual embedding (Qdrant/clip-ViT-B-32) |
 | DETR Model | ~350 MB | Document layout detection |
@@ -315,12 +317,15 @@ Remove all Faria-installed files.
 ### What Does NOT Get Removed
 
 **macOS / Linux — system packages (remove manually):**
+
+OpenCV is now installed into `~/.faria/lib/opencv/` and is removed by `uninstall.sh`. Tesseract and MuPDF are still installed as system packages:
+
 ```bash
 # macOS
-brew uninstall tesseract opencv mupdf
+brew uninstall tesseract mupdf
 
 # Ubuntu/Debian
-sudo apt remove tesseract-ocr libopencv-dev libmupdf-dev
+sudo apt remove tesseract-ocr libmupdf-dev
 ```
 
 **Windows — installed separately (remove manually):**
@@ -331,16 +336,19 @@ sudo apt remove tesseract-ocr libopencv-dev libmupdf-dev
 
 On Windows, these are written to the user registry by the installer:
 ```
-TESSDATA_PREFIX       → %USERPROFILE%\.faria\tesseract\tessdata
+TESSDATA_PREFIX        → %USERPROFILE%\.faria\tesseract\tessdata
 FARIA_ONNXRUNTIME_PATH → %USERPROFILE%\.faria\lib\onnxruntime\onnxruntime.dll
-CGO_CFLAGS            → include paths for OpenCV, MuPDF, Tesseract
-CGO_LDFLAGS           → lib paths for OpenCV, MuPDF, Tesseract
-PKG_CONFIG_PATH       → C:\msys64\mingw64\lib\pkgconfig
+FARIA_LLAMA_CLI_PATH   → %USERPROFILE%\.faria\bin\llama-cli.exe
+FARIA_SLM_MODEL_PATH   → %USERPROFILE%\.faria\models\qwen2.5-0.5b-instruct-q8_0.gguf
+CGO_CFLAGS             → include paths for OpenCV, MuPDF, Tesseract
+CGO_LDFLAGS            → lib paths for OpenCV, MuPDF, Tesseract
+PKG_CONFIG_PATH        → MSYS2 pkgconfig dir (e.g. D:\a\_temp\msys64\mingw64\lib\pkgconfig)
 ```
 
 Remove them in PowerShell:
 ```powershell
-foreach ($var in @("TESSDATA_PREFIX","FARIA_ONNXRUNTIME_PATH","CGO_CFLAGS","CGO_LDFLAGS")) {
+foreach ($var in @("TESSDATA_PREFIX","FARIA_ONNXRUNTIME_PATH","FARIA_LLAMA_CLI_PATH",
+                   "FARIA_SLM_MODEL_PATH","CGO_CFLAGS","CGO_LDFLAGS","PKG_CONFIG_PATH")) {
     [Environment]::SetEnvironmentVariable($var, $null, "User")
 }
 ```
@@ -364,18 +372,21 @@ FARIA_SLM_MODEL_PATH
 Add to your shell profile (`~/.bashrc`, `~/.zshrc`, or `~/.profile`):
 
 ```bash
-# IDP components
+# Required: OpenCV pkg-config path (for CGO builds)
+export PKG_CONFIG_PATH="$HOME/.faria/lib/opencv/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+# IDP components (optional if using default ~/.faria location)
 export FARIA_ONNXRUNTIME_PATH="$HOME/.faria/lib/onnxruntime/libonnxruntime.dylib"
 export FARIA_CLIP_MODEL_PATH="$HOME/.faria/models/clip_vision.onnx"
 export FARIA_DETR_MODEL_PATH="$HOME/.faria/models/detr_layout_detection.onnx"
 export FARIA_NEMOTRON_MODEL_PATH="$HOME/.faria/models/nemotron_table_structure.onnx"
 
-# Chat components (optional)
+# Chat components (optional if using default ~/.faria location)
 export FARIA_LLAMA_CLI_PATH="$HOME/.faria/bin/llama-cli"
 export FARIA_SLM_MODEL_PATH="$HOME/.faria/models/qwen2.5-0.5b-instruct-q8_0.gguf"
 ```
 
-**Note:** If using the default `~/.faria/` location, environment variables are optional — Faria will auto-detect the paths.
+**Note:** `PKG_CONFIG_PATH` is required so `go build` can find the OpenCV CGO flags. The FARIA_* path variables are optional when using the default `~/.faria/` location — Faria auto-detects them.
 
 ### Environment Variables (Windows)
 
@@ -385,9 +396,11 @@ The installer sets these automatically in the user registry. They take effect in
 |---|---|---|
 | `TESSDATA_PREFIX` | `%USERPROFILE%\.faria\tesseract\tessdata` | Tesseract language data |
 | `FARIA_ONNXRUNTIME_PATH` | `%USERPROFILE%\.faria\lib\onnxruntime\onnxruntime.dll` | ONNX Runtime DLL |
+| `FARIA_LLAMA_CLI_PATH` | `%USERPROFILE%\.faria\bin\llama-cli.exe` | llama.cpp binary (Chat) |
+| `FARIA_SLM_MODEL_PATH` | `%USERPROFILE%\.faria\models\qwen2.5-0.5b-instruct-q8_0.gguf` | Qwen model path (Chat) |
 | `CGO_CFLAGS` | `-I.../opencv/include -I.../mupdf/include -I.../tesseract/include` | CGO compiler includes |
 | `CGO_LDFLAGS` | `-L.../opencv/lib -L.../mupdf/lib -L.../tesseract/lib` | CGO linker paths |
-| `PKG_CONFIG_PATH` | `C:\msys64\mingw64\lib\pkgconfig` | pkg-config search path |
+| `PKG_CONFIG_PATH` | MSYS2 pkgconfig dir (resolved dynamically at install time) | pkg-config search path |
 
 With `pkg-config` in place, `go build` discovers CGO flags automatically — the `CGO_CFLAGS`/`CGO_LDFLAGS` variables are a fallback for manual builds.
 
@@ -427,6 +440,10 @@ After installation:
 ├── bin/
 │   └── llama-cli                          # LLM inference (Chat feature)
 ├── lib/
+│   ├── opencv/
+│   │   ├── include/opencv4/               # Headers for CGO builds
+│   │   ├── lib/libopencv_core.{so,dylib}  # Core library (+ imgproc, imgcodecs)
+│   │   └── lib/pkgconfig/opencv4.pc       # pkg-config descriptor
 │   └── onnxruntime/
 │       └── libonnxruntime.{dylib,so}      # ONNX Runtime library
 └── models/

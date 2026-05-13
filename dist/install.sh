@@ -14,7 +14,7 @@
 
 set -e
 
-# Build date: 2026-05-08T09:21:35Z
+# Build date: 2026-05-13T06:55:13Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 # ============================================================================
@@ -406,29 +406,39 @@ __setup_python() {
 __install_opencv() {
     #
     # Faria OpenCV Installation Script
-    # Installs OpenCV for image processing
+    # Downloads pre-built OpenCV binaries from GitHub Releases
     #
     # Usage: ./install-opencv.sh [OPTIONS]
     #
-    # This script uses system package managers to install OpenCV.
-    #
     
+    
+    OPENCV_VERSION="4.12.0"
     
     # Colors for output
+    
+    INSTALL_DIR="${HOME}/.faria"
+    FORCE=false
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --install-dir)
+                INSTALL_DIR="$2"
+                shift 2
+                ;;
+            --force|-f)
+                FORCE=true
+                shift
+                ;;
             --help|-h)
                 echo "Faria OpenCV Installation Script"
                 echo ""
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
                 echo "Options:"
+                echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
+                echo "  --force, -f        Reinstall even if already present"
                 echo "  --help, -h         Show this help message"
-                echo ""
-                echo "This script installs OpenCV using your system's package manager."
-                echo "Supported platforms: macOS (Homebrew), Ubuntu/Debian, Fedora/RHEL, Arch Linux"
                 exit 0
                 ;;
             *)
@@ -445,143 +455,37 @@ __install_opencv() {
     
     # Detect OS and architecture
     OS="$(uname -s)"
+    ARCH="$(uname -m)"
     
     echo -e "${YELLOW}Detecting system...${NC}"
     echo "  OS: ${OS}"
+    echo "  Architecture: ${ARCH}"
     
-    # Check if OpenCV is already installed
-    if pkg-config --exists opencv4 2>/dev/null; then
-        OPENCV_VERSION=$(pkg-config --modversion opencv4)
-        echo ""
-        echo -e "${GREEN}OpenCV is already installed:${NC}"
-        echo "  Version: ${OPENCV_VERSION}"
-        echo ""
-        read -p "Do you want to reinstall/upgrade? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "${GREEN}Skipping installation.${NC}"
-            exit 0
-        fi
-    fi
-    
-    echo ""
-    
-    # Install based on platform
+    # Determine asset name based on platform
     case "${OS}" in
         Darwin)
-            echo -e "${YELLOW}Installing via Homebrew...${NC}"
-            if ! command -v brew &> /dev/null; then
-                echo -e "${RED}Error: Homebrew is not installed.${NC}"
-                echo "Please install Homebrew first: https://brew.sh"
-                exit 1
-            fi
-    
-            brew install opencv
-            ;;
-        Linux)
-            # Detect Linux distribution
-            if [ -f /etc/os-release ]; then
-                . /etc/os-release
-                DISTRO="${ID}"
-            elif [ -f /etc/lsb-release ]; then
-                . /etc/lsb-release
-                DISTRO="${DISTRIB_ID,,}"
-            else
-                DISTRO="unknown"
-            fi
-    
-            echo "  Distribution: ${DISTRO}"
-            echo ""
-    
-            # Distro repos ship OpenCV 4.5/4.6 which causes dependency mismatches.
-            # Build 4.10.0 from source to guarantee a compatible version.
-            OPENCV_BUILD_VERSION="4.10.0"
-    
-            echo -e "${YELLOW}Installing build dependencies...${NC}"
-            case "${DISTRO}" in
-                ubuntu|debian|linuxmint|pop)
-                    sudo apt update
-                    sudo apt install -y build-essential cmake git pkg-config \
-                        libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
-                        libv4l-dev libjpeg-dev libpng-dev libtiff-dev \
-                        libatlas-base-dev python3-dev python3-numpy libtbb-dev
-                    ;;
-                fedora|rhel|centos|rocky|almalinux)
-                    sudo dnf install -y gcc gcc-c++ cmake git pkgconfig \
-                        gtk3-devel ffmpeg-devel libv4l-devel \
-                        libjpeg-turbo-devel libpng-devel libtiff-devel \
-                        python3-devel python3-numpy tbb-devel
-                    ;;
-                arch|manjaro|endeavouros)
-                    sudo pacman -S --noconfirm base-devel cmake git pkgconf \
-                        gtk3 ffmpeg libjpeg-turbo libpng libtiff \
-                        python python-numpy intel-tbb
-                    ;;
-                opensuse*)
-                    sudo zypper install -y gcc gcc-c++ cmake git pkg-config \
-                        gtk3-devel ffmpeg-devel libv4l-devel \
-                        libjpeg62-devel libpng16-devel libtiff-devel \
-                        python3-devel python3-numpy tbb-devel
+            case "${ARCH}" in
+                arm64)
+                    OPENCV_ASSET="opencv-${OPENCV_VERSION}-macos-arm64.zip"
                     ;;
                 *)
-                    echo -e "${RED}Unsupported Linux distribution: ${DISTRO}${NC}"
-                    echo ""
-                    echo "Please install the build dependencies for your distro manually,"
-                    echo "then re-run this script, or build OpenCV ${OPENCV_BUILD_VERSION} from source:"
-                    echo "  https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz"
+                    echo -e "${RED}Error: Only macOS arm64 has a pre-built OpenCV tarball.${NC}"
+                    echo "  For macOS x86_64, install OpenCV via Homebrew:"
+                    echo "    brew install opencv"
                     exit 1
                     ;;
             esac
-    
-            echo ""
-            echo -e "${YELLOW}Downloading OpenCV ${OPENCV_BUILD_VERSION} source...${NC}"
-            BUILD_DIR="$(mktemp -d)"
-            trap "rm -rf '${BUILD_DIR}'" EXIT
-    
-            if command -v curl &> /dev/null; then
-                curl -fL "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz" \
-                    -o "${BUILD_DIR}/opencv.tar.gz"
-            elif command -v wget &> /dev/null; then
-                wget -O "${BUILD_DIR}/opencv.tar.gz" \
-                    "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_BUILD_VERSION}.tar.gz"
-            else
-                echo -e "${RED}Error: Neither curl nor wget found. Please install one and retry.${NC}"
-                exit 1
-            fi
-    
-            echo -e "${YELLOW}Building OpenCV ${OPENCV_BUILD_VERSION} (this may take 10-20 minutes)...${NC}"
-            tar -xzf "${BUILD_DIR}/opencv.tar.gz" -C "${BUILD_DIR}"
-            mkdir -p "${BUILD_DIR}/opencv-${OPENCV_BUILD_VERSION}/build"
-            cd "${BUILD_DIR}/opencv-${OPENCV_BUILD_VERSION}/build"
-    
-            cmake .. \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX=/usr/local \
-                -DOPENCV_GENERATE_PKGCONFIG=ON \
-                -DBUILD_TESTS=OFF \
-                -DBUILD_PERF_TESTS=OFF \
-                -DBUILD_EXAMPLES=OFF
-    
-            if command -v nproc &> /dev/null; then
-                JOBS="$(nproc)"
-            elif command -v getconf &> /dev/null; then
-                JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
-            else
-                JOBS=1
-            fi
-            make -j"${JOBS}"
-            sudo make install
-            sudo ldconfig
-    
-            # Persist the pkg-config path so opencv4.pc is always discoverable.
-            # Both lib and lib64 are exported: on Fedora/RHEL-family 64-bit systems
-            # CMake installs opencv4.pc to /usr/local/lib64/pkgconfig instead of lib/.
-            echo 'export PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH' \
-                | sudo tee /etc/profile.d/opencv.sh > /dev/null
-            export PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
-    
-            cd - > /dev/null
-            # BUILD_DIR cleanup is handled by the EXIT trap set after mktemp
+            ;;
+        Linux)
+            case "${ARCH}" in
+                x86_64)
+                    OPENCV_ASSET="opencv-${OPENCV_VERSION}-linux-x86_64.zip"
+                    ;;
+                *)
+                    echo -e "${RED}Error: Only Linux x86_64 has a pre-built OpenCV tarball.${NC}"
+                    exit 1
+                    ;;
+            esac
             ;;
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
@@ -590,29 +494,156 @@ __install_opencv() {
             ;;
     esac
     
-    # Verify installation
-    echo ""
-    echo -e "${YELLOW}Verifying installation...${NC}"
+    # Asset hosted in faria-install GitHub Releases.
+    # Override FARIA_RELEASE_REPO to download from a fork (e.g. for CI on a fork).
+    RELEASE_REPO="${FARIA_RELEASE_REPO:-exto360-inc/faria-install}"
+    OPENCV_DIR="${INSTALL_DIR}/lib/opencv"
+    OPENCV_URL="https://github.com/${RELEASE_REPO}/releases/download/opencv-${OPENCV_VERSION}/${OPENCV_ASSET}"
+    CHECKSUMS_URL="https://github.com/${RELEASE_REPO}/releases/download/opencv-${OPENCV_VERSION}/checksums.txt"
     
-    if pkg-config --exists opencv4 2>/dev/null; then
-        OPENCV_VERSION=$(pkg-config --modversion opencv4)
-        echo -e "${GREEN}  OpenCV: OK${NC}"
-        echo "    Version: ${OPENCV_VERSION}"
-    else
-        echo -e "${RED}  OpenCV: FAILED${NC}"
-        echo "  pkg-config could not find opencv4"
-        exit 1
+    echo ""
+    echo -e "${YELLOW}Installation configuration:${NC}"
+    echo "  Install directory: ${OPENCV_DIR}"
+    echo "  OpenCV version: ${OPENCV_VERSION}"
+    echo "  Asset: ${OPENCV_ASSET}"
+    echo ""
+    
+    # Already installed?
+    if [ -f "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc" ] && [ "${FORCE}" = false ]; then
+        echo -e "${GREEN}OpenCV ${OPENCV_VERSION} already installed at ${OPENCV_DIR}${NC}"
+        exit 0
     fi
     
-    # Print success message
+    mkdir -p "${OPENCV_DIR}"
+    
+    TEMP_DIR=$(mktemp -d)
+    trap "rm -rf '${TEMP_DIR}'" EXIT
+    
+    # Download
+    echo -e "${YELLOW}Downloading OpenCV ${OPENCV_VERSION} pre-built tarball...${NC}"
+    echo "  URL: ${OPENCV_URL}"
+    
+    if command -v curl &> /dev/null; then
+        curl -fSL --progress-bar -o "${TEMP_DIR}/${OPENCV_ASSET}" "${OPENCV_URL}"
+    elif command -v wget &> /dev/null; then
+        wget -q --show-progress -O "${TEMP_DIR}/${OPENCV_ASSET}" "${OPENCV_URL}"
+    else
+        echo -e "${RED}Error: Neither curl nor wget found. Please install one.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}  Download complete.${NC}"
+    echo ""
+    
+    # Verify checksum
+    echo -e "${YELLOW}Verifying checksum...${NC}"
+    if command -v curl &> /dev/null; then
+        curl -fsSL -o "${TEMP_DIR}/checksums.txt" "${CHECKSUMS_URL}" || true
+    elif command -v wget &> /dev/null; then
+        wget -q -O "${TEMP_DIR}/checksums.txt" "${CHECKSUMS_URL}" || true
+    fi
+    
+    if [ -f "${TEMP_DIR}/checksums.txt" ]; then
+        EXPECTED_HASH=$(grep "${OPENCV_ASSET}" "${TEMP_DIR}/checksums.txt" | awk '{print $1}')
+        if [ -n "${EXPECTED_HASH}" ]; then
+            if command -v sha256sum &> /dev/null; then
+                ACTUAL_HASH=$(sha256sum "${TEMP_DIR}/${OPENCV_ASSET}" | awk '{print $1}')
+            elif command -v shasum &> /dev/null; then
+                ACTUAL_HASH=$(shasum -a 256 "${TEMP_DIR}/${OPENCV_ASSET}" | awk '{print $1}')
+            else
+                ACTUAL_HASH=""
+            fi
+            if [ -n "${ACTUAL_HASH}" ]; then
+                if [ "${ACTUAL_HASH}" = "${EXPECTED_HASH}" ]; then
+                    echo -e "${GREEN}  Checksum OK.${NC}"
+                else
+                    echo -e "${RED}  Checksum mismatch!${NC}"
+                    echo "    Expected: ${EXPECTED_HASH}"
+                    echo "    Got:      ${ACTUAL_HASH}"
+                    exit 1
+                fi
+            else
+                echo -e "${YELLOW}  Warning: no checksum tool found — skipping verify.${NC}"
+            fi
+        else
+            echo -e "${YELLOW}  Warning: no checksum entry found for ${OPENCV_ASSET} — skipping verify.${NC}"
+        fi
+    fi
+    echo ""
+    
+    # Extract
+    echo -e "${YELLOW}Extracting OpenCV...${NC}"
+    if ! command -v unzip &> /dev/null; then
+        echo -e "${RED}Error: unzip not found. Install it (e.g. sudo apt install unzip) and retry.${NC}"
+        exit 1
+    fi
+    EXTRACT_DIR="${TEMP_DIR}/opencv-extract"
+    mkdir -p "${EXTRACT_DIR}"
+    unzip -q "${TEMP_DIR}/${OPENCV_ASSET}" -d "${EXTRACT_DIR}"
+    
+    # Handle both flat and single-wrapper-dir zips
+    ROOT_DIRS=$(find "${EXTRACT_DIR}" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+    ROOT_FILES=$(find "${EXTRACT_DIR}" -maxdepth 1 -mindepth 1 -type f | wc -l | tr -d ' ')
+    if [ "${ROOT_DIRS}" -eq 1 ] && [ "${ROOT_FILES}" -eq 0 ]; then
+        WRAPPER=$(find "${EXTRACT_DIR}" -maxdepth 1 -mindepth 1 -type d | head -1)
+        rm -rf "${OPENCV_DIR}"
+        mv "${WRAPPER}" "${OPENCV_DIR}"
+    else
+        rm -rf "${OPENCV_DIR}"
+        mv "${EXTRACT_DIR}" "${OPENCV_DIR}"
+    fi
+    echo -e "${GREEN}  Extracted to: ${OPENCV_DIR}${NC}"
+    echo ""
+    
+    # Fix prefix in opencv4.pc
+    PC_FILE="${OPENCV_DIR}/lib/pkgconfig/opencv4.pc"
+    if [ -f "${PC_FILE}" ]; then
+        echo -e "${YELLOW}Registering opencv4.pc with pkg-config...${NC}"
+        sed -i.bak "s|^prefix=.*|prefix=${OPENCV_DIR}|" "${PC_FILE}"
+        rm -f "${PC_FILE}.bak"
+        echo -e "${GREEN}  opencv4.pc prefix updated to ${OPENCV_DIR}.${NC}"
+    else
+        echo -e "${YELLOW}  Warning: opencv4.pc not found — pkg-config path not registered.${NC}"
+    fi
+    echo ""
+    
+    # Export PKG_CONFIG_PATH for the current session
+    PKG_CONFIG_DIR="${OPENCV_DIR}/lib/pkgconfig"
+    export PKG_CONFIG_PATH="${PKG_CONFIG_DIR}:${PKG_CONFIG_PATH:-}"
+    
+    # Verify installation
+    echo -e "${YELLOW}Verifying installation...${NC}"
+    
+    LIB_CHECK=""
+    case "${OS}" in
+        Darwin) LIB_CHECK=$(find "${OPENCV_DIR}/lib" -maxdepth 2 -name "libopencv_core*.dylib" 2>/dev/null | head -1) ;;
+        Linux)  LIB_CHECK=$(find "${OPENCV_DIR}/lib" -maxdepth 2 -name "libopencv_core*.so*"   2>/dev/null | head -1) ;;
+    esac
+    
+    if [ -n "${LIB_CHECK}" ]; then
+        echo -e "${GREEN}  OpenCV lib: $(basename "${LIB_CHECK}")${NC}"
+    else
+        echo -e "${YELLOW}  Warning: libopencv_core not found under ${OPENCV_DIR}/lib${NC}"
+    fi
+    
+    if pkg-config --exists opencv4 2>/dev/null; then
+        OPENCV_FOUND_VER=$(pkg-config --modversion opencv4)
+        echo -e "${GREEN}  pkg-config opencv4: OK (v${OPENCV_FOUND_VER})${NC}"
+    else
+        echo -e "${YELLOW}  pkg-config opencv4: not found in current session (open a new shell or source your profile)${NC}"
+    fi
+    
     echo ""
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}  Installation Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo "OpenCV has been installed system-wide."
-    echo "No additional configuration is required - Faria will auto-detect it."
-    echo ""}
+    echo "Installed to: ${OPENCV_DIR}"
+    echo ""
+    echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
+    echo ""
+    echo "  export PKG_CONFIG_PATH=\"${PKG_CONFIG_DIR}:\$PKG_CONFIG_PATH\""
+    echo ""
+}
 
 # ============================================================================
 # __install_tesseract() - from install-tesseract.sh
@@ -2410,7 +2441,9 @@ __install_idp() {
     mkdir -p "${INSTALL_DIR}"
     
     # Step 1: Install OpenCV
-    run_step "Installing OpenCV" "install-opencv.sh"
+    run_step "Installing OpenCV" "install-opencv.sh" --install-dir "${INSTALL_DIR}"
+    # Make opencv4.pc discoverable for subsequent CGO builds in this session
+    export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/opencv/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     
     # Step 2: Install Tesseract (includes Leptonica)
     run_step "Installing Tesseract OCR" "install-tesseract.sh"
