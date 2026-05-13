@@ -58,7 +58,9 @@ convert_shell_script_to_function() {
         sed '/^[[:space:]]*SCRIPT_DIR=/d' | \
         sed '/^[[:space:]]*REPO_DIR=/d' | \
         # Convert nested function definitions: cleanup() { -> function _local_cleanup {
-        sed -E 's/^([[:space:]]*)([a-zA-Z_][a-zA-Z_0-9]*)\(\)[[:space:]]*\{/\1function _local_\2 {/g' | \
+        # Only rename non-underscore-prefixed functions to avoid breaking private helpers
+        # (e.g. _try_release, _build_from_source) whose call sites are not updated by sed.
+        sed -E 's/^([[:space:]]*)([a-zA-Z][a-zA-Z_0-9]*)\(\)[[:space:]]*\{/\1function _local_\2 {/g' | \
         # Update references to renamed nested functions
         sed 's/trap cleanup EXIT/trap _local_cleanup EXIT/g' | \
         # Replace source of setup-python.sh with function call
@@ -78,6 +80,9 @@ convert_shell_script_to_function() {
         # Replace REPO_DIR/models references with MODELS_CACHE_DIR
         sed 's|\${REPO_DIR}/models|\${MODELS_CACHE_DIR}|g' | \
         sed 's|\$REPO_DIR/models|\${MODELS_CACHE_DIR}|g' | \
+        # Transform exit calls to return so inlined functions don't kill the whole script
+        sed 's/exit 0/return 0/g' | \
+        sed 's/exit 1/return 1/g' | \
         # Indent all lines
         sed 's/^/    /'
 

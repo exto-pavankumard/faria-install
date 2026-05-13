@@ -58,11 +58,17 @@ if command -v tesseract &> /dev/null; then
     echo "  ${TESSERACT_VERSION}"
     echo "  Path: $(which tesseract)"
     echo ""
-    read -p "Do you want to reinstall/upgrade? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${GREEN}Skipping installation.${NC}"
-        exit 0
+    # In interactive mode offer to skip; in non-interactive always continue so
+    # that leptonica-dev is installed even when tesseract was pre-installed.
+    if [ -t 0 ]; then
+        read -p "Do you want to reinstall/upgrade? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${GREEN}Skipping installation.${NC}"
+            exit 0
+        fi
+    else
+        echo -e "${YELLOW}Non-interactive mode — ensuring leptonica dev libraries are installed.${NC}"
     fi
 fi
 

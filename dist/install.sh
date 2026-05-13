@@ -14,7 +14,7 @@
 
 set -e
 
-# Build date: 2026-05-13T07:59:17Z
+# Build date: 2026-05-13T11:54:49Z
 # GitHub URL: https://raw.githubusercontent.com/exto360-inc/faria-install/main
 
 # ============================================================================
@@ -314,7 +314,7 @@ __setup_python() {
                 else
                     echo -e "${RED}Error: Homebrew not found. Please install Homebrew first:${NC}" >&2
                     echo "  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"" >&2
-                    exit 1
+                    return 1
                 fi
             else
                 # Linux
@@ -335,7 +335,7 @@ __setup_python() {
             eval "$(pyenv init -)"
         else
             echo -e "${RED}Error: pyenv installation failed.${NC}" >&2
-            exit 1
+            return 1
         fi
     
         # Check if Python 3.12 is already installed via pyenv
@@ -351,7 +351,7 @@ __setup_python() {
             if [ -z "$latest_312" ]; then
                 echo -e "${RED}Error: Could not find Python ${REQUIRED_MAJOR}.${REQUIRED_MINOR}.x in pyenv.${NC}" >&2
                 echo "  Try running: pyenv install --list | grep ${REQUIRED_MAJOR}.${REQUIRED_MINOR}" >&2
-                exit 1
+                return 1
             fi
     
             pyenv install "$latest_312"
@@ -396,7 +396,7 @@ __setup_python() {
         fi
     else
         echo -e "${RED}Error: Could not find or install Python ${REQUIRED_MAJOR}.${REQUIRED_MINOR}${NC}" >&2
-        exit 1
+        return 1
     fi
 }
 
@@ -441,11 +441,11 @@ __install_opencv() {
                 echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
                 echo "  --force, -f        Reinstall even if already present"
                 echo "  --help, -h         Show this help message"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -467,7 +467,7 @@ __install_opencv() {
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
             echo "For Windows, please use install-opencv.ps1"
-            exit 1
+            return 1
             ;;
     esac
     
@@ -494,11 +494,11 @@ __install_opencv() {
     if [ "${FORCE}" = false ]; then
         if [ -f "${OPENCV_DIR}/lib/pkgconfig/opencv4.pc" ]; then
             echo -e "${GREEN}OpenCV ${OPENCV_VERSION} already installed at ${OPENCV_DIR}${NC}"
-            exit 0
+            return 0
         elif pkg-config --exists opencv4 2>/dev/null; then
             VER=$(pkg-config --modversion opencv4 2>/dev/null)
             echo -e "${GREEN}OpenCV already available via pkg-config (v${VER}) — skipping installation.${NC}"
-            exit 0
+            return 0
         fi
     fi
     
@@ -514,7 +514,7 @@ __install_opencv() {
     # condition of an `if` statement. Each critical step must use `|| return 1`
     # so that a failure causes the function to return non-zero for the caller.
     # ============================================================================
-    function _local__try_release {
+    _try_release() {
         if [ -z "${OPENCV_ASSET}" ]; then
             echo -e "${YELLOW}  No pre-built release for ${OS}/${ARCH} — will build from source.${NC}"
             return 1
@@ -619,7 +619,7 @@ __install_opencv() {
     # _build_from_source: build OpenCV from source.
     # Called outside an `if` condition, so set -e applies normally.
     # ============================================================================
-    function _local__build_from_source {
+    _build_from_source() {
         echo -e "${YELLOW}Building OpenCV ${OPENCV_VERSION} from source...${NC}"
         echo ""
     
@@ -628,7 +628,7 @@ __install_opencv() {
                 if ! command -v brew &>/dev/null; then
                     echo -e "${RED}Error: Homebrew is not installed.${NC}"
                     echo "Install it from https://brew.sh then re-run this script."
-                    exit 1
+                    return 1
                 fi
                 echo -e "${YELLOW}Installing via Homebrew (this may take several minutes)...${NC}"
                 brew install opencv
@@ -788,11 +788,11 @@ __install_tesseract() {
                 echo ""
                 echo "This script installs Tesseract OCR using your system's package manager."
                 echo "Supported platforms: macOS (Homebrew), Ubuntu/Debian, Fedora/RHEL, Arch Linux"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -816,11 +816,17 @@ __install_tesseract() {
         echo "  ${TESSERACT_VERSION}"
         echo "  Path: $(which tesseract)"
         echo ""
-        read -p "Do you want to reinstall/upgrade? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "${GREEN}Skipping installation.${NC}"
-            exit 0
+        # In interactive mode offer to skip; in non-interactive always continue so
+        # that leptonica-dev is installed even when tesseract was pre-installed.
+        if [ -t 0 ]; then
+            read -p "Do you want to reinstall/upgrade? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${GREEN}Skipping installation.${NC}"
+                return 0
+            fi
+        else
+            echo -e "${YELLOW}Non-interactive mode — ensuring leptonica dev libraries are installed.${NC}"
         fi
     fi
     
@@ -833,7 +839,7 @@ __install_tesseract() {
             if ! command -v brew &> /dev/null; then
                 echo -e "${RED}Error: Homebrew is not installed.${NC}"
                 echo "Please install Homebrew first: https://brew.sh"
-                exit 1
+                return 1
             fi
     
             brew install tesseract leptonica
@@ -878,14 +884,14 @@ __install_tesseract() {
                     echo "  - Ubuntu/Debian: sudo apt install tesseract-ocr libtesseract-dev libleptonica-dev"
                     echo "  - Fedora/RHEL: sudo dnf install tesseract tesseract-devel leptonica-devel"
                     echo "  - Arch: sudo pacman -S tesseract leptonica"
-                    exit 1
+                    return 1
                     ;;
             esac
             ;;
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
             echo "For Windows, please use install-tesseract.ps1"
-            exit 1
+            return 1
             ;;
     esac
     
@@ -901,7 +907,7 @@ __install_tesseract() {
         echo "    Path: ${TESSERACT_PATH}"
     else
         echo -e "${RED}  Tesseract: FAILED${NC}"
-        exit 1
+        return 1
     fi
     
     # Print success message
@@ -953,11 +959,11 @@ __install_mupdf() {
                 echo ""
                 echo "This script installs MuPDF using your system's package manager."
                 echo "Supported platforms: macOS (Homebrew), Ubuntu/Debian, Fedora/RHEL, Arch Linux"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -1003,7 +1009,7 @@ __install_mupdf() {
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo -e "${GREEN}Skipping installation.${NC}"
-            exit 0
+            return 0
         fi
     fi
     
@@ -1016,7 +1022,7 @@ __install_mupdf() {
             if ! command -v brew &> /dev/null; then
                 echo -e "${RED}Error: Homebrew is not installed.${NC}"
                 echo "Please install Homebrew first: https://brew.sh"
-                exit 1
+                return 1
             fi
     
             brew install mupdf
@@ -1061,14 +1067,14 @@ __install_mupdf() {
                     echo "  - Ubuntu/Debian: sudo apt install mupdf mupdf-tools libmupdf-dev"
                     echo "  - Fedora/RHEL: sudo dnf install mupdf mupdf-devel"
                     echo "  - Arch: sudo pacman -S mupdf mupdf-tools"
-                    exit 1
+                    return 1
                     ;;
             esac
             ;;
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
             echo "For Windows, please use install-mupdf.ps1"
-            exit 1
+            return 1
             ;;
     esac
     
@@ -1152,11 +1158,11 @@ __install_onnxruntime() {
                 echo ""
                 echo "IMPORTANT: This script downloads ONNX Runtime from GitHub releases,"
                 echo "NOT from Homebrew. The Homebrew version lacks CoreML/Neural Engine support."
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -1179,7 +1185,7 @@ __install_onnxruntime() {
     if [ "${SYSTEM_INSTALL}" = true ] && [ "${OS}" != "Linux" ]; then
         echo -e "${RED}Error: --system is only supported on Linux.${NC}"
         echo "  Use the default user install on macOS/Windows."
-        exit 1
+        return 1
     fi
     
     # --system writes to /usr/local and runs ldconfig — both require root.
@@ -1193,7 +1199,7 @@ __install_onnxruntime() {
         echo -e "${RED}Error: --system requires root privileges.${NC}"
         echo "  Inside Docker this is automatic. On a regular host, re-run as:"
         echo "    sudo \"$0\" ${ORIG_ARGS[*]}"
-        exit 1
+        return 1
     fi
     
     # Determine ONNX Runtime release asset name
@@ -1210,7 +1216,7 @@ __install_onnxruntime() {
                     ;;
                 *)
                     echo -e "${RED}Unsupported architecture: ${ARCH}${NC}"
-                    exit 1
+                    return 1
                     ;;
             esac
             if [ "${ENABLE_GPU}" = true ]; then
@@ -1236,14 +1242,14 @@ __install_onnxruntime() {
                     ;;
                 *)
                     echo -e "${RED}Unsupported architecture: ${ARCH}${NC}"
-                    exit 1
+                    return 1
                     ;;
             esac
             ;;
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
             echo "For Windows, please use install-onnxruntime.ps1"
-            exit 1
+            return 1
             ;;
     esac
     
@@ -1264,7 +1270,7 @@ __install_onnxruntime() {
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo -e "${GREEN}Skipping installation.${NC}"
-            exit 0
+            return 0
         fi
     fi
     
@@ -1288,7 +1294,7 @@ __install_onnxruntime() {
         wget -q --show-progress -O "${TEMP_DIR}/onnxruntime.tgz" "${ONNX_URL}"
     else
         echo -e "${RED}Error: Neither curl nor wget found. Please install one of them.${NC}"
-        exit 1
+        return 1
     fi
     
     echo -e "${YELLOW}Extracting ONNX Runtime...${NC}"
@@ -1298,7 +1304,7 @@ __install_onnxruntime() {
     EXTRACTED_DIR=$(find "${TEMP_DIR}" -maxdepth 1 -type d -name "onnxruntime-*" | head -1)
     if [ -z "${EXTRACTED_DIR}" ]; then
         echo -e "${RED}Error: Could not find extracted ONNX Runtime directory${NC}"
-        exit 1
+        return 1
     fi
     
     if [ "${SYSTEM_INSTALL}" = true ]; then
@@ -1338,7 +1344,7 @@ __install_onnxruntime() {
         echo -e "${GREEN}  ${LIB_NAME}: OK (${LIB_SIZE})${NC}"
     else
         echo -e "${RED}  ${LIB_NAME}: FAILED (expected at ${VERIFY_PATH})${NC}"
-        exit 1
+        return 1
     fi
     
     # Print success message and instructions
@@ -1461,11 +1467,11 @@ __install_models() {
                 echo "Prerequisites:"
                 echo "  --system mode: curl or wget"
                 echo "  local mode:    Python 3.8+, Git with Git LFS (for Nemotron)"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -1508,7 +1514,7 @@ __install_models() {
     
         if [ -z "${PYTHON_CMD}" ]; then
             echo -e "${RED}Error: Python 3.12 setup failed${NC}"
-            exit 1
+            return 1
         fi
     
         PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | cut -d' ' -f2)
@@ -1516,7 +1522,7 @@ __install_models() {
         # Check Git
         if ! command -v git &> /dev/null; then
             echo -e "${RED}Error: Git not found. Please install Git.${NC}"
-            exit 1
+            return 1
         fi
         echo -e "${GREEN}  Git: $(git --version | cut -d' ' -f3)${NC}"
     
@@ -1529,7 +1535,7 @@ __install_models() {
                 echo "  macOS: brew install git-lfs"
                 echo "  Ubuntu/Debian: sudo apt install git-lfs"
                 echo "  Then run: git lfs install"
-                exit 1
+                return 1
             fi
             echo -e "${GREEN}  Git LFS: installed${NC}"
         fi
@@ -1561,7 +1567,7 @@ __install_models() {
     # ============================================================================
     # Helper: download a model from HuggingFace (system mode)
     # ============================================================================
-    function _local__hf_download {
+    _hf_download() {
         local label="$1"
         local url="$2"
         local dest="$3"
@@ -1583,7 +1589,7 @@ __install_models() {
             fi
         else
             echo -e "${RED}Error: Neither curl nor wget found.${NC}"
-            exit 1
+            return 1
         fi
     
         if [ -f "${dest}" ]; then
@@ -1592,7 +1598,7 @@ __install_models() {
             echo -e "${GREEN}  $(basename "${dest}"): OK (${size})${NC}"
         else
             echo -e "${RED}  $(basename "${dest}"): FAILED${NC}"
-            exit 1
+            return 1
         fi
     }
     
@@ -1678,7 +1684,7 @@ __install_models() {
     
                 if [ ! -f "${DETR_EXPORT_SCRIPT}" ]; then
                     echo -e "${RED}Error: DETR export script not found at: ${DETR_EXPORT_SCRIPT}${NC}"
-                    exit 1
+                    return 1
                 fi
     
                 cd "${WORK_DIR}"
@@ -1690,7 +1696,7 @@ __install_models() {
                 else
                     echo -e "${RED}Error: DETR ONNX file not found after export${NC}"
                     echo "  Expected output: ${DETR_MODEL_PATH}"
-                    exit 1
+                    return 1
                 fi
             fi
         fi
@@ -1753,7 +1759,7 @@ __install_models() {
     
                 if [ ! -f "${NEMOTRON_EXPORT_SCRIPT}" ]; then
                     echo -e "${RED}Error: Nemotron export script not found at: ${NEMOTRON_EXPORT_SCRIPT}${NC}"
-                    exit 1
+                    return 1
                 fi
     
                 cd "${WORK_DIR}"
@@ -1765,7 +1771,7 @@ __install_models() {
                 else
                     echo -e "${RED}Error: Nemotron ONNX file not found after export${NC}"
                     echo "  Expected output: ${NEMOTRON_MODEL_PATH}"
-                    exit 1
+                    return 1
                 fi
             fi
         fi
@@ -1871,11 +1877,11 @@ __install_slm() {
                 echo "Options:"
                 echo "  --install-dir DIR  Install to DIR (default: ~/.faria)"
                 echo "  --help, -h         Show this help message"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -1905,7 +1911,7 @@ __install_slm() {
                     ;;
                 *)
                     echo -e "${RED}Unsupported architecture: ${ARCH}${NC}"
-                    exit 1
+                    return 1
                     ;;
             esac
             ;;
@@ -1919,14 +1925,14 @@ __install_slm() {
                     ;;
                 *)
                     echo -e "${RED}Unsupported architecture: ${ARCH}${NC}"
-                    exit 1
+                    return 1
                     ;;
             esac
             ;;
         *)
             echo -e "${RED}Unsupported OS: ${OS}${NC}"
             echo "For Windows, please use install-slm.ps1"
-            exit 1
+            return 1
             ;;
     esac
     
@@ -1958,7 +1964,7 @@ __install_slm() {
         wget -q --show-progress -O "${TEMP_DIR}/llama.zip" "${LLAMA_URL}"
     else
         echo -e "${RED}Error: Neither curl nor wget found. Please install one of them.${NC}"
-        exit 1
+        return 1
     fi
     
     echo -e "${YELLOW}Extracting llama.cpp...${NC}"
@@ -1968,7 +1974,7 @@ __install_slm() {
     LLAMA_CLI=$(find "${TEMP_DIR}/llama" -name "llama-cli" -type f | head -1)
     if [ -z "${LLAMA_CLI}" ]; then
         echo -e "${RED}Error: llama-cli not found in archive${NC}"
-        exit 1
+        return 1
     fi
     
     cp "${LLAMA_CLI}" "${INSTALL_DIR}/bin/llama-cli"
@@ -2002,7 +2008,7 @@ __install_slm() {
         echo -e "${GREEN}  llama-cli: OK${NC}"
     else
         echo -e "${RED}  llama-cli: FAILED${NC}"
-        exit 1
+        return 1
     fi
     
     if [ -f "${MODEL_PATH}" ]; then
@@ -2010,7 +2016,7 @@ __install_slm() {
         echo -e "${GREEN}  Model: OK (${MODEL_SIZE})${NC}"
     else
         echo -e "${RED}  Model: FAILED${NC}"
-        exit 1
+        return 1
     fi
     
     # Print success message and instructions
@@ -2089,11 +2095,11 @@ __verify_installation() {
                 echo "  --install-dir DIR  Check installation in DIR (default: ~/.faria)"
                 echo "  --system           Verify a system-wide install (/usr/local)"
                 echo "  --help, -h         Show this help message"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -2300,13 +2306,15 @@ __verify_installation() {
         echo "     Install: brew install tesseract (macOS) or apt install tesseract-ocr (Linux)"
     fi
     
-    # Check OpenCV
+    # Check OpenCV — ensure the user-space install dir is on PKG_CONFIG_PATH
+    export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/opencv/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     if pkg-config --exists opencv4 2>/dev/null; then
         OPENCV_VERSION=$(pkg-config --modversion opencv4 2>/dev/null || echo "0.0.0")
         check_version "opencv" "$OPENCV_VERSION"
     else
         echo -e "  ${WARN} opencv: Not found (needed for IDP)"
-        echo "     Install: brew install opencv (macOS) or apt install libopencv-dev (Linux)"
+        echo "     Install: brew install opencv (macOS) or run ./scripts/install-opencv.sh (Linux)"
+        echo "     Hint: set PKG_CONFIG_PATH=\"${INSTALL_DIR}/lib/opencv/lib/pkgconfig:\$PKG_CONFIG_PATH\""
     fi
     
     # Check MuPDF
@@ -2389,7 +2397,7 @@ __verify_installation() {
         echo "Run the installation scripts to install missing components:"
         echo "  ./scripts/install.sh"
         echo ""
-        exit 1
+        return 1
     fi
     echo ""
 }
@@ -2429,19 +2437,19 @@ __install_idp() {
     _REMOTE_BASE="${FARIA_INSTALL_RAW:-https://raw.githubusercontent.com/exto360-inc/faria-install/main}/scripts"
     _BOOTSTRAP_TMPDIR=""
     
-    function _local__bootstrap_scripts {
+    _bootstrap_scripts() {
         if [ ! -f __install_opencv ]; then
             echo "Bootstrapping: downloading leaf scripts from ${_REMOTE_BASE} ..."
             _BOOTSTRAP_TMPDIR=$(mktemp -d)
     
             # Detect download tool
             if command -v curl &> /dev/null; then
-                function _local__dl { curl -fsSL "$1" -o "$2"; }
+                _dl() { curl -fsSL "$1" -o "$2"; }
             elif command -v wget &> /dev/null; then
-                function _local__dl { wget -qO "$2" "$1"; }
+                _dl() { wget -qO "$2" "$1"; }
             else
                 echo "Error: neither curl nor wget found. Please install one and retry."
-                exit 1
+                return 1
             fi
     
             # setup-python.sh needed by install-models.sh local mode;
@@ -2450,14 +2458,14 @@ __install_idp() {
                       install-onnxruntime.sh install-models.sh install-slm.sh setup-python.sh; do
                 if ! _dl "${_REMOTE_BASE}/${s}" "${_BOOTSTRAP_TMPDIR}/${s}"; then
                     echo "Error: failed to download ${s} from ${_REMOTE_BASE}"
-                    exit 1
+                    return 1
                 fi
                 chmod +x "${_BOOTSTRAP_TMPDIR}/${s}" 2>/dev/null || true
             done
         fi
     }
     
-    function _local__cleanup_bootstrap {
+    _cleanup_bootstrap() {
         [ -n "${_BOOTSTRAP_TMPDIR}" ] && rm -rf "${_BOOTSTRAP_TMPDIR}"
     }
     trap '_cleanup_bootstrap' EXIT
@@ -2503,12 +2511,12 @@ __install_idp() {
                 echo "  - ONNX Runtime     Model inference"
                 echo "  - DETR model       Layout detection"
                 echo "  - Nemotron model   Table extraction"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
                 echo "Use --help for usage information"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -2605,7 +2613,7 @@ __install_idp() {
     echo ""
     
     if [ "${INSTALL_FAILED}" = true ]; then
-        exit 1
+        return 1
     fi
 }
 
@@ -2649,12 +2657,12 @@ __install_chat() {
                 echo "This script installs dependencies for the Chat feature:"
                 echo "  - llama.cpp        LLM inference engine (~5 MB)"
                 echo "  - Qwen 2.5-0.5B    Language model (~530 MB)"
-                exit 0
+                return 0
                 ;;
             *)
                 echo "Unknown option: $1"
                 echo "Use --help for usage information"
-                exit 1
+                return 1
                 ;;
         esac
     done
@@ -2702,7 +2710,7 @@ __install_chat() {
     echo ""
     
     if [ "${INSTALL_FAILED}" = true ]; then
-        exit 1
+        return 1
     fi
 }
 

@@ -260,13 +260,15 @@ else
     echo "     Install: brew install tesseract (macOS) or apt install tesseract-ocr (Linux)"
 fi
 
-# Check OpenCV
+# Check OpenCV — ensure the user-space install dir is on PKG_CONFIG_PATH
+export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/opencv/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 if pkg-config --exists opencv4 2>/dev/null; then
     OPENCV_VERSION=$(pkg-config --modversion opencv4 2>/dev/null || echo "0.0.0")
     check_version "opencv" "$OPENCV_VERSION"
 else
     echo -e "  ${WARN} opencv: Not found (needed for IDP)"
-    echo "     Install: brew install opencv (macOS) or apt install libopencv-dev (Linux)"
+    echo "     Install: brew install opencv (macOS) or run ./scripts/install-opencv.sh (Linux)"
+    echo "     Hint: set PKG_CONFIG_PATH=\"${INSTALL_DIR}/lib/opencv/lib/pkgconfig:\$PKG_CONFIG_PATH\""
 fi
 
 # Check MuPDF
